@@ -8,11 +8,11 @@ const authRoutes = require('./routes/authRoutes');
 const authMiddleware = require('./middleware/auth');
 
 const app = express();
-app.use(cors());
+app.use(cors("http://krilobillingsoftware.easywayitsolutions.com"));
 app.use(express.json());
 
 // Connect to the main database
-mongoose.connect('mongodb://localhost:27017/krilo_billing_software', {
+mongoose.connect('mongodb+srv://utsavvadodariya2008:Utsav@162@cluster0.8a3idtg.mongodb.net/krilo_billing_software', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 }).then(() => {
