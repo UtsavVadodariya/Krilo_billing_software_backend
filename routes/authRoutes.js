@@ -68,7 +68,7 @@ router.post('/register', async (req, res) => {
     }
 
     // Auto-login after registration
-    const token = jwt.sign({ userId: user._id, databaseName }, 'secret_key', { expiresIn: '1h' });
+    const token = jwt.sign({ userId: user._id, databaseName }, 'secret_key', { expiresIn: '8h' });
     res.status(201).json({ message: 'User registered', token });
   } catch (error) {
     console.error('Registration error:', error);
@@ -96,7 +96,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'User account incomplete, please re-register' });
     }
 
-    const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, 'secret_key', { expiresIn: '1h' });
+    const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, 'secret_key', { expiresIn: '8h' });
     console.log('User logged in successfully', { email, databaseName: user.databaseName });
     res.json({ token });
   } catch (error) {
