@@ -8,7 +8,7 @@ const authRoutes = require('./routes/authRoutes');
 const authMiddleware = require('./middleware/auth');
 
 const app = express();
-app.use(cors("http://krilobillingsoftware.easywayitsolutions.com"));
+app.use(cors("http://https://krilobilling.easywayitsolutions.com"));
 app.use(express.json());
 
 // Connect to the main database
