@@ -8,7 +8,7 @@ const authRoutes = require('./routes/authRoutes');
 const authMiddleware = require('./middleware/auth');
 
 const app = express();
-app.use(cors("http://krilobilling.easywayitsolutions.com"));
+app.use(cors("https://krilobilling.easywayitsolutions.com"));
 // app.use(cors());
 app.use(express.json());
 
