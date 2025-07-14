@@ -199,14 +199,7 @@ router.post('/', async (req, res) => {
             description: `Sales Invoice payment for ${customer}`,
             date: invoice.date,
           },
-          {
-            accountType: 'Accounts Receivable',
-            type: 'debit',
-            amount: parsedTotalReceived,
-            invoiceId: invoice._id,
-            description: `Payment received for ${customer}`,
-            date: invoice.date,
-          }
+
         );
       }
       if (accountEntries.length > 0) {
