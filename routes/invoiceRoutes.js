@@ -1,7 +1,10 @@
 const express = require('express');
-const mongoose = require('mongoose');
-const registerModels = require('../models/index');
 const router = express.Router();
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const registerModels = require('../models/index');
+
+// Update these routes in your invoices router
 
 router.get('/', async (req, res) => {
   try {
@@ -11,7 +14,11 @@ router.get('/', async (req, res) => {
     }
     console.log('Fetching invoices for database:', databaseName);
     const { Invoice } = registerModels(databaseName);
-    const invoices = await Invoice.find().populate('products', 'name price');
+    const invoices = await Invoice.find()
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN')
+      .select('-__v')
+      .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending, then by _id descending as fallback
     console.log('Invoices fetched:', { count: invoices.length, databaseName });
     res.json(invoices);
   } catch (error) {
@@ -26,44 +33,220 @@ router.get('/sales_invoice', async (req, res) => {
     if (!databaseName) {
       throw new Error('Database name not provided');
     }
-    console.log('Fetching all invoices for database:', databaseName);
+    console.log('Fetching sales invoices for database:', databaseName);
     const { Invoice } = registerModels(databaseName);
-    const invoices = await Invoice.find().populate('products', 'name price');
-    console.log('All invoices fetched:', { count: invoices.length, databaseName });
+    const invoices = await Invoice.find({ type: 'sales_invoice' })
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN')
+      .select('-__v')
+      .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending
+    console.log('Sales invoices fetched:', { count: invoices.length, databaseName });
     res.json(invoices);
   } catch (error) {
-    console.error('Error fetching all invoices:', { error: error.message, databaseName: req.databaseName });
-    res.status(500).json({ error: 'Failed to fetch all invoices: ' + error.message });
+    console.error('Error fetching sales invoices:', { error: error.message, databaseName: req.databaseName });
+    res.status(500).json({ error: 'Failed to fetch sales invoices: ' + error.message });
   }
 });
 
 router.get('/customer', async (req, res) => {
   try {
     const databaseName = req.databaseName;
-    const { customerName } = req.query;
+    const { customerName, customerId } = req.query;
     if (!databaseName) {
       throw new Error('Database name not provided');
     }
-    console.log(`Fetching invoices for database: ${databaseName}, customer: ${customerName || 'all'}`);
+    console.log(`Fetching invoices for database: ${databaseName}, customer: ${customerName || customerId || 'all'}`);
     const { Invoice } = registerModels(databaseName);
     if (!Invoice) {
       throw new Error('Invoice model not registered');
     }
-    const query = customerName ? { customer: new RegExp(customerName.trim(), 'i') } : {};
-    const invoices = await Invoice.find(query).populate('products', 'name price');
-    console.log(`Invoices fetched:`, { count: invoices.length, databaseName, customer: customerName || 'all' });
+    let query = {};
+    if (customerId) {
+      query.customerId = customerId;
+    } else if (customerName) {
+      query.customer = new RegExp(customerName.trim(), 'i');
+    }
+    const invoices = await Invoice.find(query)
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN')
+      .select('-__v')
+      .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending
+    console.log(`Invoices fetched:`, { count: invoices.length, databaseName, customer: customerName || customerId || 'all' });
     res.json(invoices);
   } catch (error) {
     console.error('Error fetching customer invoices:', { 
       error: error.message, 
       databaseName: req.databaseName, 
       customerName,
+      customerId,
       stack: error.stack 
     });
     res.status(500).json({ error: 'Failed to fetch customer invoices: ' + error.message });
   }
 });
+router.get('/:id/pdf', async (req, res) => {
+  try {
+    const databaseName = req.databaseName;
+    if (!databaseName) {
+      throw new Error('Database name not provided');
+    }
+    console.log('Generating PDF for invoice:', req.params.id, 'database:', databaseName);
+    const { Invoice, CompanySettings, Customer } = registerModels(databaseName);
+    
+    // First check if invoice exists
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    console.log('Invoice found:', { id: invoice._id, customerId: invoice.customerId, customer: invoice.customer });
 
+    // Populate the invoice with related data
+    const populatedInvoice = await Invoice.findById(req.params.id)
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN');
+
+    if (!populatedInvoice) {
+      return res.status(404).json({ error: 'Invoice not found after population' });
+    }
+
+    // Check if customer data is populated
+    if (!populatedInvoice.customerId) {
+      console.error('Customer not populated, trying to find customer manually');
+      // Try to find customer manually if populate failed
+      const customer = await Customer.findById(invoice.customerId);
+      if (customer) {
+        populatedInvoice.customerId = customer;
+      } else {
+        return res.status(404).json({ error: 'Customer not found for this invoice' });
+      }
+    }
+
+    const companySettings = await CompanySettings.findOne();
+    if (!companySettings) {
+      return res.status(404).json({ error: 'Company settings not found' });
+    }
+
+    // Create PDF
+    const doc = new PDFDocument({ margin: 50 });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Invoice_${populatedInvoice._id}.pdf`);
+    doc.pipe(res);
+
+    // Add company logo (with error handling)
+    if (companySettings.companyLogo && fs.existsSync(companySettings.companyLogo)) {
+      try {
+        doc.image(companySettings.companyLogo, 50, 50, { width: 100 });
+      } catch (logoError) {
+        console.warn('Failed to add company logo:', logoError.message);
+      }
+    }
+
+    // Add company details
+    doc.fontSize(20).text(companySettings.companyName || 'Company Name', 200, 50);
+    doc.fontSize(10).text(companySettings.address || '', 200, 70);
+    doc.text(`${companySettings.city || ''}, ${companySettings.state || ''}, ${companySettings.country || ''} ${companySettings.pincode || ''}`, 200, 80);
+    if (companySettings.GSTIN) {
+      doc.text(`GSTIN: ${companySettings.GSTIN}`, 200, 90);
+    }
+    if (companySettings.contactNumber) {
+      doc.text(`Contact: ${companySettings.contactNumber}`, 200, 100);
+    }
+    doc.moveDown(2);
+
+    // Add invoice title
+    doc.fontSize(16).text(`Invoice: ${populatedInvoice.type ? populatedInvoice.type.toUpperCase() : 'INVOICE'}`, { align: 'center' });
+    doc.fontSize(10).text(`Date: ${new Date(populatedInvoice.date).toLocaleDateString()}`, { align: 'center' });
+    doc.moveDown();
+
+    // Add customer details with fallback
+    doc.fontSize(12).text('Billed To:');
+    const customerData = populatedInvoice.customerId;
+    if (customerData && customerData.name) {
+      doc.fontSize(10).text(customerData.name);
+      doc.text(customerData.address || '');
+      doc.text(`${customerData.city || ''}, ${customerData.state || ''}, ${customerData.country || ''} ${customerData.pincode || ''}`);
+      if (customerData.GSTIN) {
+        doc.text(`GSTIN: ${customerData.GSTIN}`);
+      }
+    } else {
+      // Fallback to customer name from invoice if populated data is not available
+      doc.fontSize(10).text(populatedInvoice.customer || 'Customer Name Not Available');
+    }
+    doc.moveDown();
+
+    // Add products table
+    doc.fontSize(12).text('Items:');
+    doc.moveDown(0.5);
+    const tableTop = doc.y;
+    const itemWidth = 200;
+    const qtyWidth = 50;
+    const priceWidth = 100;
+    const totalWidth = 100;
+
+    // Table headers
+    doc.fontSize(10).text('Item', 50, tableTop, { width: itemWidth });
+    doc.text('Qty', 250, tableTop, { width: qtyWidth, align: 'right' });
+    doc.text('Price', 300, tableTop, { width: priceWidth, align: 'right' });
+    doc.text('Total', 400, tableTop, { width: totalWidth, align: 'right' });
+    doc.moveDown(0.5);
+
+    // Table rows
+    let currentY = doc.y;
+    if (populatedInvoice.products && populatedInvoice.products.length > 0) {
+      populatedInvoice.products.forEach((product, index) => {
+        const qty = populatedInvoice.quantities[index] || 0;
+        const price = product.price || 0;
+        const total = price * qty;
+        
+        doc.text(product.name || 'Product Name', 50, currentY, { width: itemWidth });
+        doc.text(qty.toString(), 250, currentY, { width: qtyWidth, align: 'right' });
+        doc.text(`₹${price.toFixed(2)}`, 300, currentY, { width: priceWidth, align: 'right' });
+        doc.text(`₹${total.toFixed(2)}`, 400, currentY, { width: totalWidth, align: 'right' });
+        currentY += 20;
+      });
+    } else {
+      doc.text('No products found', 50, currentY);
+      currentY += 20;
+    }
+
+    // Totals
+    doc.moveDown();
+    doc.text(`Total: ₹${(populatedInvoice.total || 0).toFixed(2)}`, 400, currentY, { width: totalWidth, align: 'right' });
+    if (populatedInvoice.totalReceived !== null && populatedInvoice.totalReceived !== undefined) {
+      doc.text(`Received: ₹${(populatedInvoice.totalReceived || 0).toFixed(2)}`, 400, currentY + 20, { width: totalWidth, align: 'right' });
+      doc.text(`Pending: ₹${(populatedInvoice.totalPendingAmount || 0).toFixed(2)}`, 400, currentY + 40, { width: totalWidth, align: 'right' });
+    }
+
+    // Add terms and conditions
+    if (companySettings.termsAndConditions) {
+      doc.moveDown(2);
+      doc.fontSize(12).text('Terms and Conditions:');
+      doc.fontSize(10).text(companySettings.termsAndConditions, { align: 'justify' });
+    }
+
+    // Add company signature (with error handling)
+    if (companySettings.companySign && fs.existsSync(companySettings.companySign)) {
+      try {
+        doc.moveDown(2);
+        doc.fontSize(12).text('Authorized Signature:');
+        doc.image(companySettings.companySign, 50, doc.y, { width: 100 });
+      } catch (signError) {
+        console.warn('Failed to add company signature:', signError.message);
+      }
+    }
+
+    doc.end();
+    console.log('PDF generated successfully for invoice:', { id: populatedInvoice._id, databaseName });
+  } catch (error) {
+    console.error('Error generating invoice PDF:', { 
+      error: error.message, 
+      stack: error.stack,
+      databaseName: req.databaseName,
+      invoiceId: req.params.id
+    });
+    res.status(500).json({ error: 'Failed to generate invoice PDF: ' + error.message });
+  }
+});
 router.post('/', async (req, res) => {
   try {
     const databaseName = req.databaseName;
@@ -72,13 +255,13 @@ router.post('/', async (req, res) => {
     }
     console.log('Adding invoice for database:', databaseName);
     console.log('Received payload:', req.body);
-    const { Product, Invoice, Account } = registerModels(databaseName);
+    const { Product, Invoice, Account, Customer } = registerModels(databaseName);
 
-    const { customer, type, products: productIds, quantities, total, totalReceived } = req.body;
+    const { customerId, customer, type, products: productIds, quantities, total, totalReceived } = req.body;
 
     // Validate payload
-    if (!customer || typeof customer !== 'string' || !customer.trim()) {
-      throw new Error('Invalid request: Customer name is required');
+    if (!customerId || !customer || typeof customer !== 'string' || !customer.trim()) {
+      throw new Error('Invalid request: Customer ID and name are required');
     }
     if (!type || !['quotation', 'sales_order', 'sales_invoice', 'purchase_invoice'].includes(type)) {
       throw new Error('Invalid request: Invalid invoice type');
@@ -88,6 +271,15 @@ router.post('/', async (req, res) => {
     }
     if (!Array.isArray(quantities) || quantities.length === 0 || productIds.length !== quantities.length) {
       throw new Error(`Invalid request: Quantities array must match products array (received ${quantities.length} quantities, expected ${productIds.length})`);
+    }
+
+    // Validate customer
+    const customerDoc = await Customer.findById(customerId);
+    if (!customerDoc) {
+      throw new Error('Invalid request: Customer not found');
+    }
+    if (customerDoc.name !== customer.trim()) {
+      throw new Error('Invalid request: Customer name does not match customer ID');
     }
 
     const parsedTotal = parseFloat(total);
@@ -103,15 +295,15 @@ router.post('/', async (req, res) => {
       return parsed;
     });
 
-    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== '' ? parseFloat(totalReceived) : 0;
-    if (parsedTotalReceived < 0) {
+    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== '' ? parseFloat(totalReceived) : null;
+    if (parsedTotalReceived !== null && parsedTotalReceived < 0) {
       throw new Error('Invalid request: Total received cannot be negative');
     }
-    if (parsedTotalReceived > parsedTotal) {
+    if (parsedTotalReceived !== null && parsedTotalReceived > parsedTotal) {
       throw new Error('Invalid request: Total received cannot exceed total amount');
     }
 
-    const totalPendingAmount = parsedTotal - parsedTotalReceived;
+    const totalPendingAmount = parsedTotalReceived !== null ? parsedTotal - parsedTotalReceived : null;
 
     // Validate product IDs
     const products = await Product.find({ _id: { $in: productIds } });
@@ -155,6 +347,7 @@ router.post('/', async (req, res) => {
 
     // Create invoice
     const invoice = new Invoice({
+      customerId,
       customer: customer.trim(),
       type,
       products: productIds,
@@ -166,6 +359,7 @@ router.post('/', async (req, res) => {
     });
     await invoice.save();
     console.log('Invoice created:', { 
+      customerId,
       customer, 
       type, 
       total: parsedTotal, 
@@ -178,7 +372,7 @@ router.post('/', async (req, res) => {
     // Create account entries for sales_invoice
     if (type === 'sales_invoice') {
       const accountEntries = [];
-      if (totalReceived === null || totalReceived === undefined) {
+      if (parsedTotalReceived === null) {
         // No payment details: credit full total to Accounts Receivable
         accountEntries.push({
           accountType: 'Accounts Receivable',
@@ -194,12 +388,19 @@ router.post('/', async (req, res) => {
           {
             accountType: 'Accounts Receivable',
             type: 'credit',
-            amount: parsedTotalReceived,
+            amount: parsedTotal,
             invoiceId: invoice._id,
-            description: `Sales Invoice payment for ${customer}`,
+            description: `Sales Invoice for ${customer}`,
             date: invoice.date,
           },
-
+          {
+            accountType: 'Accounts Receivable',
+            type: 'debit',
+            amount: parsedTotalReceived,
+            invoiceId: invoice._id,
+            description: `Payment received for ${customer}`,
+            date: invoice.date,
+          }
         );
       }
       if (accountEntries.length > 0) {
@@ -221,7 +422,11 @@ router.post('/', async (req, res) => {
       console.log('Account entries created for purchase invoice:', { invoiceId: invoice._id });
     }
 
-    res.json(invoice);
+    const populatedInvoice = await Invoice.findById(invoice._id)
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN')
+      .select('-__v');
+    res.json(populatedInvoice);
   } catch (error) {
     console.error('Error creating invoice:', { error: error.message, databaseName: req.databaseName, body: req.body });
     res.status(500).json({ error: 'Failed to create invoice: ' + error.message });
@@ -245,15 +450,15 @@ router.put('/:id', async (req, res) => {
     }
 
     const parsedTotalReceived = totalReceived !== undefined && totalReceived !== '' ? parseFloat(totalReceived) : invoice.totalReceived;
-    if (isNaN(parsedTotalReceived) || parsedTotalReceived < 0) {
+    if (parsedTotalReceived !== null && (isNaN(parsedTotalReceived) || parsedTotalReceived < 0)) {
       throw new Error('Invalid request: Total received must be a non-negative number');
     }
-    if (parsedTotalReceived > invoice.total) {
+    if (parsedTotalReceived !== null && parsedTotalReceived > invoice.total) {
       throw new Error('Invalid request: Total received cannot exceed total amount');
     }
 
-    const additionalReceived = parsedTotalReceived - invoice.totalReceived;
-    const totalPendingAmount = invoice.total - parsedTotalReceived;
+    const additionalReceived = parsedTotalReceived !== null ? parsedTotalReceived - (invoice.totalReceived || 0) : 0;
+    const totalPendingAmount = parsedTotalReceived !== null ? invoice.total - parsedTotalReceived : null;
 
     invoice.totalReceived = parsedTotalReceived;
     invoice.totalPendingAmount = totalPendingAmount;
@@ -279,7 +484,11 @@ router.put('/:id', async (req, res) => {
       console.log('Account entry created for additional payment:', { invoiceId: invoice._id, amount: additionalReceived });
     }
 
-    res.json(invoice);
+    const populatedInvoice = await Invoice.findById(invoice._id)
+      .populate('products', 'name price stock')
+      .populate('customerId', 'name address country state city pincode GSTIN')
+      .select('-__v');
+    res.json(populatedInvoice);
   } catch (error) {
     console.error('Error updating invoice:', { error: error.message, databaseName: req.databaseName, body: req.body });
     res.status(500).json({ error: 'Failed to update invoice: ' + error.message });

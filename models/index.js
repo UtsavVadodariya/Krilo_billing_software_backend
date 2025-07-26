@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const productSchema = require('./Product');
 const invoiceSchema = require('./Invoice');
 const accountSchema = require('./Account');
+const customerSchema = require('./Customer');
+const companySettingsSchema = require('./CompanySettings');
 
 const registerModels = (dbName) => {
   if (!dbName) {
@@ -23,20 +25,34 @@ const registerModels = (dbName) => {
     delete conn.models['Account'];
     console.log('Cleared existing Account model for:', dbName);
   }
+  if (conn.models['Customer']) {
+    delete conn.models['Customer'];
+    console.log('Cleared existing Customer model for:', dbName);
+  }
+  if (conn.models['CompanySettings']) {
+    delete conn.models['CompanySettings'];
+    console.log('Cleared existing CompanySettings model for:', dbName);
+  }
 
-  // Register Product model first
+  // Register models
   const ProductModel = conn.model('Product', productSchema, 'products');
   console.log('Product model registered for:', dbName);
-
-  // Register Invoice model
   const InvoiceModel = conn.model('Invoice', invoiceSchema, 'invoices');
   console.log('Invoice model registered for:', dbName);
-
-  // Register Account model
   const AccountModel = conn.model('Account', accountSchema, 'accounts');
   console.log('Account model registered for:', dbName);
+  const CustomerModel = conn.model('Customer', customerSchema, 'customers');
+  console.log('Customer model registered for:', dbName);
+  const CompanySettingsModel = conn.model('CompanySettings', companySettingsSchema, 'companySettings');
+  console.log('CompanySettings model registered for:', dbName);
 
-  return { Product: ProductModel, Invoice: InvoiceModel, Account: AccountModel };
+  return {
+    Product: ProductModel,
+    Invoice: InvoiceModel,
+    Account: AccountModel,
+    Customer: CustomerModel,
+    CompanySettings: CompanySettingsModel,
+  };
 };
 
 module.exports = registerModels;

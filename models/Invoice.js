@@ -1,13 +1,54 @@
 const mongoose = require('mongoose');
 
 const invoiceSchema = new mongoose.Schema({
-  customer: { type: String, required: true },
-  type: { type: String, required: true },
-  products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
-  quantities: [{ type: Number, required: true }],
-  total: { type: Number, required: true },
-  date: { type: Date, default: Date.now },
-  totalReceived: { type: Number, default: 0 },
-  totalPendingAmount: { type: Number, default: function() { return this.total; } },});
+  customerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Customer',
+    required: [true, 'Customer ID is required'],
+  },
+  customer: {
+    type: String,
+    required: [true, 'Customer name is required'],
+    trim: true,
+  },
+  type: {
+    type: String,
+    enum: ['sales_invoice', 'purchase_invoice', 'quotation', 'sales_order'],
+    required: [true, 'Invoice type is required'],
+  },
+  products: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product',
+    required: true,
+  }],
+  quantities: [{
+    type: Number,
+    required: true,
+    min: [0, 'Quantity cannot be negative'],
+  }],
+  total: {
+    type: Number,
+    required: true,
+    min: [0, 'Total cannot be negative'],
+  },
+  totalReceived: {
+    type: Number,
+    min: [0, 'Total received cannot be negative'],
+    default: null,
+  },
+  totalPendingAmount: {
+    type: Number,
+    min: [0, 'Total pending amount cannot be negative'],
+    default: function () {
+      return this.totalReceived !== null ? this.total - this.totalReceived : null;
+    },
+  },
+  date: {
+    type: Date,
+    default: Date.now,
+  },
+}, {
+  timestamps: true,
+});
 
-module.exports = invoiceSchema
+module.exports = invoiceSchema;
