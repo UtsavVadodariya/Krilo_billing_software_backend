@@ -4,6 +4,9 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const router = express.Router();
 
+// Use consistent JWT secret
+const JWT_SECRET = process.env.JWT_SECRET || 'secret_key';
+
 router.post('/register', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -68,7 +71,7 @@ router.post('/register', async (req, res) => {
     }
 
     // Auto-login after registration
-    const token = jwt.sign({ userId: user._id, databaseName }, 'secret_key', { expiresIn: '8h' });
+    const token = jwt.sign({ userId: user._id, databaseName }, JWT_SECRET, { expiresIn: '8h' });
     res.status(201).json({ message: 'User registered', token });
   } catch (error) {
     console.error('Registration error:', error);
@@ -96,7 +99,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'User account incomplete, please re-register' });
     }
 
-    const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, 'secret_key', { expiresIn: '8h' });
+    const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, JWT_SECRET, { expiresIn: '8h' });
     console.log('User logged in successfully', { email, databaseName: user.databaseName });
     res.json({ token });
   } catch (error) {
@@ -111,22 +114,31 @@ router.get('/user', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
       console.log('GET /api/auth/user: No token provided');
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ 
+        error: 'No token provided',
+        redirect: true 
+      });
     }
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, JWT_SECRET);
       console.log('GET /api/auth/user: Decoded token:', { userId: decoded.userId, databaseName: decoded.databaseName });
     } catch (err) {
       console.error('GET /api/auth/user: Token verification failed:', { error: err.message, token: token.substring(0, 20) + '...' });
-      return res.status(401).json({ error: 'Invalid or expired token' });
+      return res.status(401).json({ 
+        error: 'Invalid or expired token',
+        redirect: true 
+      });
     }
 
     const user = await User.findById(decoded.userId).select('email role');
     if (!user) {
       console.log('GET /api/auth/user: User not found for ID:', decoded.userId);
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        error: 'User not found',
+        redirect: true 
+      });
     }
 
     console.log('GET /api/auth/user: User fetched:', { email: user.email, role: user.role });
@@ -134,6 +146,78 @@ router.get('/user', async (req, res) => {
   } catch (error) {
     console.error('GET /api/auth/user: Error fetching user:', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch user: ' + error.message });
+  }
+});
+
+// Add token validation route
+router.get('/validate-token', async (req, res) => {
+  try {
+    console.log('GET /api/auth/validate-token called');
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      console.log('Token validation: No token provided');
+      return res.status(401).json({ 
+        error: 'No token provided',
+        redirect: true 
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+      console.log('Token validation: Token decoded successfully', { 
+        userId: decoded.userId, 
+        databaseName: decoded.databaseName 
+      });
+    } catch (err) {
+      console.error('Token validation: Token verification failed:', { 
+        error: err.message, 
+        token: token.substring(0, 20) + '...' 
+      });
+      return res.status(401).json({ 
+        error: 'Invalid or expired token',
+        redirect: true 
+      });
+    }
+
+    // Check if user still exists
+    const user = await User.findById(decoded.userId);
+    if (!user) {
+      console.log('Token validation: User not found for ID:', decoded.userId);
+      return res.status(401).json({ 
+        error: 'User not found',
+        redirect: true 
+      });
+    }
+
+    // Check if databaseName exists
+    if (!decoded.databaseName) {
+      console.error('Token validation: databaseName missing in token', { userId: decoded.userId });
+      return res.status(401).json({ 
+        error: 'Invalid token: databaseName missing',
+        redirect: true 
+      });
+    }
+
+    console.log('Token validation: Token is valid', { 
+      userId: decoded.userId, 
+      databaseName: decoded.databaseName,
+      email: user.email 
+    });
+
+    res.json({ 
+      valid: true, 
+      userId: decoded.userId, 
+      databaseName: decoded.databaseName,
+      email: user.email 
+    });
+  } catch (error) {
+    console.error('Token validation error:', { error: error.message });
+    res.status(401).json({ 
+      error: 'Token validation failed',
+      redirect: true 
+    });
   }
 });
 

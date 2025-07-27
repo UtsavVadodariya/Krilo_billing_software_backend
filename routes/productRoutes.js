@@ -27,13 +27,13 @@ router.post('/', async (req, res) => {
     }
     console.log('Adding product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, stock } = req.body;
-    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0) {
-      throw new Error('Invalid product data: name, category, price, and stock (non-negative) are required');
+    const { name, category, price, stock, gst } = req.body;
+    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
+      throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    const product = new Product({ name, category, price, stock });
+    const product = new Product({ name, category, price, stock, gst });
     await product.save();
-    console.log('Product added:', { name, stock, databaseName });
+    console.log('Product added:', { name, stock, gst, databaseName });
     res.json(product);
   } catch (error) {
     console.error('Error adding product:', { error: error.message, databaseName: req.databaseName });
@@ -49,20 +49,20 @@ router.put('/:id', async (req, res) => {
     }
     console.log('Updating product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, stock } = req.body;
-    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0) {
-      throw new Error('Invalid product data: name, category, price, and stock (non-negative) are required');
+    const { name, category, price, stock, gst } = req.body;
+    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
+      throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    console.log('Received update payload:', { id: req.params.id, name, category, price, stock });
+    console.log('Received update payload:', { id: req.params.id, name, category, price, stock, gst });
     const product = await Product.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, category, price, stock } },
+      { $set: { name, category, price, stock, gst } },
       { new: true, runValidators: true }
     );
     if (!product) {
       throw new Error('Product not found');
     }
-    console.log('Product updated:', { id: req.params.id, name, stock, databaseName });
+    console.log('Product updated:', { id: req.params.id, name, stock, gst, databaseName });
     res.json(product);
   } catch (error) {
     console.error('Error updating product:', { error: error.message, databaseName: req.databaseName, body: req.body });
