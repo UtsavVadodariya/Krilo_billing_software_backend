@@ -1,3 +1,5 @@
+// models/invoiceSchema.js
+
 const mongoose = require('mongoose');
 
 const invoiceSchema = new mongoose.Schema({
@@ -26,10 +28,31 @@ const invoiceSchema = new mongoose.Schema({
     required: true,
     min: [0, 'Quantity cannot be negative'],
   }],
+  prices: [{
+    type: Number,
+    required: true,
+    min: [0, 'Price cannot be negative'],
+  }],
+  discounts: [{
+    type: Number,
+    default: 0,
+    min: [0, 'Discount cannot be negative'],
+    max: [100, 'Discount cannot exceed 100%'],
+  }],
+  gstAmounts: [{
+    type: Number,
+    default: 0,
+    min: [0, 'GST amount cannot be negative'],
+  }],
   total: {
     type: Number,
     required: true,
     min: [0, 'Total cannot be negative'],
+  },
+  grandTotalDiscount: {
+    type: Number,
+    default: 0,
+    min: [0, 'Grand total discount cannot be negative'],
   },
   totalReceived: {
     type: Number,

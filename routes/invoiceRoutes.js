@@ -181,7 +181,8 @@ router.get('/:id/pdf', async (req, res) => {
         const price = product.price || 0;
         const gstRate = product.gst || 0;
         const hsn = product.hsn || '28391900';
-        const taxableAmount = price * quantity;
+        // Inside PDF generation, when calculating taxable amount:
+const taxableAmount = price * quantity * (1 - (discount / 100));
         
         if (!hsnSummary[hsn]) {
           hsnSummary[hsn] = {
@@ -649,9 +650,22 @@ router.post('/', async (req, res) => {
     }
     console.log('Adding invoice for database:', databaseName);
     console.log('Received payload:', req.body);
+
     const { Product, Invoice, Account, Customer } = registerModels(databaseName);
 
-    const { customerId, customer, type, products: productIds, quantities, total, totalReceived } = req.body;
+    const {
+      customerId,
+      customer,
+      type,
+      products: productIds,
+      quantities,
+      prices,
+      discounts,
+      gstAmounts,
+      total,
+      grandTotalDiscount,
+      totalReceived
+    } = req.body;
 
     // Validate payload
     if (!customerId || !customer || typeof customer !== 'string' || !customer.trim()) {
@@ -663,9 +677,19 @@ router.post('/', async (req, res) => {
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new Error('Invalid request: Products array is required and cannot be empty');
     }
-    if (!Array.isArray(quantities) || quantities.length === 0 || productIds.length !== quantities.length) {
-      throw new Error(`Invalid request: Quantities array must match products array (received ${quantities.length} quantities, expected ${productIds.length})`);
-    }
+
+    // Validate array lengths
+    const expectedLength = productIds.length;
+    const validateArray = (arr, name) => {
+      if (!Array.isArray(arr) || arr.length !== expectedLength) {
+        throw new Error(`Invalid request: ${name} must be an array of length ${expectedLength}`);
+      }
+    };
+
+    validateArray(quantities, 'quantities');
+    validateArray(prices, 'prices');
+    validateArray(discounts, 'discounts');
+    validateArray(gstAmounts, 'gstAmounts');
 
     // Validate customer
     const customerDoc = await Customer.findById(customerId);
@@ -681,15 +705,15 @@ router.post('/', async (req, res) => {
       throw new Error('Invalid request: Total amount must be a positive number');
     }
 
-    const parsedQuantities = quantities.map((q) => {
-      const parsed = parseInt(q, 10);
-      if (isNaN(parsed) || parsed <= 0) {
-        throw new Error('Invalid request: All quantities must be positive integers');
-      }
-      return parsed;
-    });
+    const parsedGrandTotalDiscount = parseFloat(grandTotalDiscount) || 0;
+    if (parsedGrandTotalDiscount < 0) {
+      throw new Error('Invalid request: Grand total discount cannot be negative');
+    }
 
-    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== '' ? parseFloat(totalReceived) : null;
+    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== '' 
+      ? parseFloat(totalReceived) 
+      : null;
+
     if (parsedTotalReceived !== null && parsedTotalReceived < 0) {
       throw new Error('Invalid request: Total received cannot be negative');
     }
@@ -702,41 +726,7 @@ router.post('/', async (req, res) => {
     // Validate product IDs
     const products = await Product.find({ _id: { $in: productIds } });
     if (products.length !== productIds.length) {
-      throw new Error(`Invalid request: One or more products not found (found ${products.length}, expected ${productIds.length})`);
-    }
-
-    // Validate stock for sales_invoice
-    if (type === 'sales_invoice') {
-      for (let i = 0; i < productIds.length; i++) {
-        const product = products.find((p) => p._id.toString() === productIds[i]);
-        if (!product) {
-          throw new Error(`Invalid request: Product not found: ${productIds[i]}`);
-        }
-        if (product.stock < parsedQuantities[i]) {
-          throw new Error(`Insufficient stock for ${product.name}: ${product.stock} available, ${parsedQuantities[i]} requested`);
-        }
-      }
-    }
-
-    // Update product stock
-    for (let i = 0; i < productIds.length; i++) {
-      const product = products.find((p) => p._id.toString() === productIds[i]);
-      const quantity = parsedQuantities[i];
-      if (type === 'sales_invoice') {
-        await Product.findByIdAndUpdate(
-          product._id,
-          { $inc: { stock: -quantity } },
-          { runValidators: true }
-        );
-        console.log(`Stock decreased for ${product.name}: -${quantity}, new stock: ${product.stock - quantity}`);
-      } else if (type === 'purchase_invoice') {
-        await Product.findByIdAndUpdate(
-          product._id,
-          { $inc: { stock: quantity } },
-          { runValidators: true }
-        );
-        console.log(`Stock increased for ${product.name}: +${quantity}, new stock: ${product.stock + quantity}`);
-      }
+      throw new Error(`Invalid request: One or more products not found`);
     }
 
     // Create invoice
@@ -745,30 +735,43 @@ router.post('/', async (req, res) => {
       customer: customer.trim(),
       type,
       products: productIds,
-      quantities: parsedQuantities,
+      quantities: quantities.map(q => parseInt(q)),
+      prices: prices.map(p => parseFloat(p)),
+      discounts: discounts.map(d => parseFloat(d)),
+      gstAmounts: gstAmounts.map(g => parseFloat(g)),
       total: parsedTotal,
+      grandTotalDiscount: parsedGrandTotalDiscount,
       totalReceived: parsedTotalReceived,
       totalPendingAmount,
       date: new Date(),
     });
-    await invoice.save();
-    console.log('Invoice created:', { 
-      customerId,
-      customer, 
-      type, 
-      total: parsedTotal, 
-      quantities: parsedQuantities,
-      totalReceived: parsedTotalReceived, 
-      totalPendingAmount, 
-      databaseName 
-    });
 
-    // Create account entries for sales_invoice
+    await invoice.save();
+    console.log('Invoice created:', { id: invoice._id, total: parsedTotal, databaseName });
+
+    // Update product stock (if sales/purchase)
     if (type === 'sales_invoice') {
-      const accountEntries = [];
+      for (let i = 0; i < productIds.length; i++) {
+        const product = products.find(p => p._id.toString() === productIds[i]);
+        const qty = parseInt(quantities[i]);
+        if (product.stock < qty) {
+          throw new Error(`Insufficient stock for ${product.name}`);
+        }
+        await Product.findByIdAndUpdate(product._id, { $inc: { stock: -qty } });
+      }
+    } else if (type === 'purchase_invoice') {
+      for (let i = 0; i < productIds.length; i++) {
+        const product = products.find(p => p._id.toString() === productIds[i]);
+        const qty = parseInt(quantities[i]);
+        await Product.findByIdAndUpdate(product._id, { $inc: { stock: qty } });
+      }
+    }
+
+    // Create account entries
+    if (type === 'sales_invoice') {
+      const entries = [];
       if (parsedTotalReceived === null) {
-        // No payment details: credit full total to Accounts Receivable
-        accountEntries.push({
+        entries.push({
           accountType: 'Accounts Receivable',
           type: 'credit',
           amount: parsedTotal,
@@ -777,8 +780,7 @@ router.post('/', async (req, res) => {
           date: invoice.date,
         });
       } else if (parsedTotalReceived > 0) {
-        // Payment details provided: credit and debit totalReceived
-        accountEntries.push(
+        entries.push(
           {
             accountType: 'Accounts Receivable',
             type: 'credit',
@@ -797,30 +799,25 @@ router.post('/', async (req, res) => {
           }
         );
       }
-      if (accountEntries.length > 0) {
-        await Account.insertMany(accountEntries);
-        console.log('Account entries created for sales invoice:', { invoiceId: invoice._id, entries: accountEntries });
-      }
+      if (entries.length > 0) await Account.insertMany(entries);
     } else if (type === 'purchase_invoice') {
-      const accountEntries = [
-        {
-          accountType: 'Purchase Revenue',
-          type: 'debit',
-          amount: parsedTotal,
-          invoiceId: invoice._id,
-          description: `Purchase Invoice for ${customer}`,
-          date: invoice.date,
-        },
-      ];
-      await Account.insertMany(accountEntries);
-      console.log('Account entries created for purchase invoice:', { invoiceId: invoice._id });
+      await Account.create({
+        accountType: 'Purchase Revenue',
+        type: 'debit',
+        amount: parsedTotal,
+        invoiceId: invoice._id,
+        description: `Purchase Invoice for ${customer}`,
+        date: invoice.date,
+      });
     }
 
     const populatedInvoice = await Invoice.findById(invoice._id)
-      .populate('products', 'name price stock')
+      .populate('products', 'name price stock gst hsn')
       .populate('customerId', 'name address country state city pincode GSTIN')
       .select('-__v');
+
     res.json(populatedInvoice);
+
   } catch (error) {
     console.error('Error creating invoice:', { error: error.message, databaseName: req.databaseName, body: req.body });
     res.status(500).json({ error: 'Failed to create invoice: ' + error.message });
