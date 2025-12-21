@@ -74,12 +74,12 @@ router.get('/customer', async (req, res) => {
     console.log(`Invoices fetched:`, { count: invoices.length, databaseName, customer: customerName || customerId || 'all' });
     res.json(invoices);
   } catch (error) {
-    console.error('Error fetching customer invoices:', { 
-      error: error.message, 
-      databaseName: req.databaseName, 
+    console.error('Error fetching customer invoices:', {
+      error: error.message,
+      databaseName: req.databaseName,
       customerName,
       customerId,
-      stack: error.stack 
+      stack: error.stack
     });
     res.status(500).json({ error: 'Failed to fetch customer invoices: ' + error.message });
   }
@@ -94,7 +94,7 @@ router.get('/:id/pdf', async (req, res) => {
     }
     console.log('Generating PDF for invoice:', req.params.id, 'database:', databaseName);
     const { Invoice, CompanySettings, Customer } = registerModels(databaseName);
-    
+
     // First check if invoice exists
     const invoice = await Invoice.findById(req.params.id);
     if (!invoice) {
@@ -135,7 +135,7 @@ router.get('/:id/pdf', async (req, res) => {
     // Helper function to convert number to words (Indian format)
     const numberToWords = (num) => {
       if (num === 0) return 'Zero Rupees only';
-      
+
       const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
       const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
       const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
@@ -182,8 +182,8 @@ router.get('/:id/pdf', async (req, res) => {
         const gstRate = product.gst || 0;
         const hsn = product.hsn || '28391900';
         // Inside PDF generation, when calculating taxable amount:
-const taxableAmount = price * quantity * (1 - (discount / 100));
-        
+        const taxableAmount = price * quantity * (1 - ((populatedInvoice.discounts[index] || 0) / 100));
+
         if (!hsnSummary[hsn]) {
           hsnSummary[hsn] = {
             hsn: hsn,
@@ -195,9 +195,9 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
             totalAmount: 0
           };
         }
-        
+
         hsnSummary[hsn].taxableAmount += taxableAmount;
-        
+
         if (isInterState) {
           const igstAmount = (taxableAmount * gstRate) / 100;
           hsnSummary[hsn].igstAmount += igstAmount;
@@ -213,11 +213,11 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     }
 
     // Create PDF with A4 size
-    const doc = new PDFDocument({ 
+    const doc = new PDFDocument({
       margin: 30,
       size: 'A4'
     });
-    
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=Invoice_${populatedInvoice._id}.pdf`);
     doc.pipe(res);
@@ -228,9 +228,9 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
         // Center the logo on A4 page (595x842 points, minus 30pt margins = 535x782 content area)
         // Place at center: x = (595 - 200) / 2 = 197.5, y = (842 - 100) / 2 = 421
         doc.save()
-           .opacity(0.1)
-           .image(companySettings.companyLogo, 197.5, 421, { width: 200, height: 100 })
-           .restore();
+          .opacity(0.1)
+          .image(companySettings.companyLogo, 197.5, 421, { width: 200, height: 100 })
+          .restore();
       } catch (logoError) {
         console.warn('Failed to add company logo watermark:', logoError.message);
       }
@@ -243,34 +243,34 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
 
     // Header Section - Tax Invoice
     doc.fontSize(14).font('Helvetica-Bold')
-       .text('Tax Invoice', 0, 50, { align: 'center' });
-    
+      .text('Tax Invoice', 0, 50, { align: 'center' });
+
     drawBox(30, 45, 535, 25);
 
     // Company Info Section
     let currentY = 85;
     doc.fontSize(16).font('Helvetica-Bold')
-       .text(companySettings.companyName || 'COMPANY NAME', 0, currentY, { align: 'center' });
-    
+      .text(companySettings.companyName || 'COMPANY NAME', 0, currentY, { align: 'center' });
+
     currentY += 20;
     doc.fontSize(9).font('Helvetica');
-    
+
     if (companySettings.address) {
       doc.text(companySettings.address, 0, currentY, { align: 'center' });
       currentY += 12;
     }
-    
+
     if (companySettings.city) {
       const cityLine = `${companySettings.city}${companySettings.state ? ', ' + companySettings.state : ''}${companySettings.pincode ? ' ' + companySettings.pincode : ''}`;
       doc.text(cityLine, 0, currentY, { align: 'center' });
       currentY += 12;
     }
-    
+
     if (companySettings.contactNumber) {
       doc.text(`Phone no.: ${companySettings.contactNumber}`, 0, currentY, { align: 'center' });
       currentY += 12;
     }
-    
+
     if (companySettings.GSTIN) {
       doc.text(`GSTIN: ${companySettings.GSTIN}`, 0, currentY, { align: 'center' });
       currentY += 12;
@@ -281,19 +281,19 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     // Bill To and Invoice Details Section
     const billToY = currentY;
     drawBox(30, billToY, 535, 80);
-    
+
     doc.fontSize(10).font('Helvetica-Bold')
-       .text('Bill To', 40, billToY + 10);
-    
+      .text('Bill To', 40, billToY + 10);
+
     doc.fontSize(9).font('Helvetica');
     const customerData = populatedInvoice.customerId;
     let billToCurrentY = billToY + 25;
-    
+
     if (customerData && customerData.name) {
       doc.font('Helvetica-Bold').text(customerData.name, 40, billToCurrentY);
       billToCurrentY += 12;
       doc.font('Helvetica');
-      
+
       if (customerData.address) {
         doc.text(customerData.address, 40, billToCurrentY);
         billToCurrentY += 12;
@@ -314,11 +314,11 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     }
 
     doc.fontSize(10).font('Helvetica-Bold')
-       .text('Invoice Details', 400, billToY + 10);
-    
+      .text('Invoice Details', 400, billToY + 10);
+
     doc.fontSize(9).font('Helvetica');
     let invoiceDetailsY = billToY + 25;
-    
+
     doc.text(`Invoice No.: INV-${populatedInvoice._id.toString().slice(-6)}`, 400, invoiceDetailsY);
     invoiceDetailsY += 12;
     doc.text(`Date: ${new Date(populatedInvoice.date || populatedInvoice.createdAt).toLocaleDateString('en-GB')}`, 400, invoiceDetailsY);
@@ -331,7 +331,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     const tableStartY = currentY;
     const rowHeight = 25;
     const headerHeight = 35;
-    
+
     let colWidths, headers;
     if (isInterState) {
       colWidths = [25, 120, 60, 40, 60, 60, 70, 70];
@@ -340,19 +340,19 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
       colWidths = [25, 120, 60, 40, 60, 60, 50, 50, 70];
       headers = ['#', 'Item Name', 'HSN/SAC', 'Quantity', 'Price/Unit', 'Taxable Amount', 'CGST', 'SGST', 'Amount'];
     }
-    
+
     const colPositions = [30];
     for (let i = 1; i < colWidths.length; i++) {
-      colPositions[i] = colPositions[i-1] + colWidths[i-1];
+      colPositions[i] = colPositions[i - 1] + colWidths[i - 1];
     }
 
     drawBox(30, tableStartY, 535, headerHeight);
-    
+
     doc.fontSize(8).font('Helvetica-Bold');
     headers.forEach((header, i) => {
-      doc.text(header, colPositions[i] + 2, tableStartY + 8, { 
-        width: colWidths[i] - 4, 
-        align: i >= 4 ? 'right' : i === 0 || i === 2 || i === 3 ? 'center' : 'left' 
+      doc.text(header, colPositions[i] + 2, tableStartY + 8, {
+        width: colWidths[i] - 4,
+        align: i >= 4 ? 'right' : i === 0 || i === 2 || i === 3 ? 'center' : 'left'
       });
     });
 
@@ -377,7 +377,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
         const price = product.price || 0;
         const gstRate = product.gst || 0;
         const taxableAmount = price * quantity;
-        
+
         let cgstAmount = 0;
         let sgstAmount = 0;
         let igstAmount = 0;
@@ -399,7 +399,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
         totalAmount += itemTotal;
 
         drawBox(30, currentY, 535, rowHeight);
-        
+
         colPositions.forEach((pos, i) => {
           if (i > 0) {
             doc.moveTo(pos, currentY).lineTo(pos, currentY + rowHeight).stroke();
@@ -407,7 +407,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
         });
 
         doc.fontSize(8).font('Helvetica');
-        
+
         let rowData;
         if (isInterState) {
           rowData = [
@@ -428,17 +428,17 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
             quantity.toString(),
             `INR ${price.toFixed(2)}`,
             `INR ${taxableAmount.toFixed(2)}`,
-            `INR ${cgstAmount.toFixed(2)}\n(${gstRate/2}%)`,
-            `INR ${sgstAmount.toFixed(2)}\n(${gstRate/2}%)`,
+            `INR ${cgstAmount.toFixed(2)}\n(${gstRate / 2}%)`,
+            `INR ${sgstAmount.toFixed(2)}\n(${gstRate / 2}%)`,
             `INR ${itemTotal.toFixed(2)}`
           ];
         }
 
         rowData.forEach((data, i) => {
           const align = i >= 4 ? 'right' : i === 0 || i === 2 || i === 3 ? 'center' : 'left';
-          doc.text(data, colPositions[i] + 2, currentY + 5, { 
-            width: colWidths[i] - 4, 
-            align: align 
+          doc.text(data, colPositions[i] + 2, currentY + 5, {
+            width: colWidths[i] - 4,
+            align: align
           });
         });
 
@@ -448,7 +448,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
 
     // Total row
     drawBox(30, currentY, 535, rowHeight);
-    
+
     colPositions.forEach((pos, i) => {
       if (i > 0) {
         doc.moveTo(pos, currentY).lineTo(pos, currentY + rowHeight).stroke();
@@ -456,7 +456,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     });
 
     doc.fontSize(8).font('Helvetica-Bold');
-    
+
     let totalRowData;
     if (isInterState) {
       totalRowData = [
@@ -485,9 +485,9 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
 
     totalRowData.forEach((data, i) => {
       const align = i >= 4 ? 'right' : i === 0 || i === 2 || i === 3 ? 'center' : 'left';
-      doc.text(data, colPositions[i] + 2, currentY + 8, { 
-        width: colWidths[i] - 4, 
-        align: align 
+      doc.text(data, colPositions[i] + 2, currentY + 8, {
+        width: colWidths[i] - 4,
+        align: align
       });
     });
 
@@ -498,9 +498,9 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     const hsnTableRowHeight = 20;
     const hsnSummaryArray = Object.values(hsnSummary);
     const hsnTableHeight = (hsnSummaryArray.length + 2) * hsnTableRowHeight; // +2 for header and total
-    
+
     drawBox(30, hsnTableY, 535, hsnTableHeight);
-    
+
     doc.fontSize(8).font('Helvetica-Bold');
     if (isInterState) {
       doc.text('HSN/SAC', 40, hsnTableY + 8);
@@ -508,7 +508,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
       doc.text('IGST Rate', 220, hsnTableY + 8);
       doc.text('IGST Amount', 290, hsnTableY + 8);
       doc.text('Total Amount', 380, hsnTableY + 8);
-      
+
       doc.moveTo(120, hsnTableY).lineTo(120, hsnTableY + hsnTableHeight).stroke();
       doc.moveTo(210, hsnTableY).lineTo(210, hsnTableY + hsnTableHeight).stroke();
       doc.moveTo(280, hsnTableY).lineTo(280, hsnTableY + hsnTableHeight).stroke();
@@ -521,7 +521,7 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
       doc.text('SGST Rate', 330, hsnTableY + 8);
       doc.text('SGST Amount', 390, hsnTableY + 8);
       doc.text('Total', 460, hsnTableY + 8);
-      
+
       doc.moveTo(110, hsnTableY).lineTo(110, hsnTableY + hsnTableHeight).stroke();
       doc.moveTo(190, hsnTableY).lineTo(190, hsnTableY + hsnTableHeight).stroke();
       doc.moveTo(250, hsnTableY).lineTo(250, hsnTableY + hsnTableHeight).stroke();
@@ -545,13 +545,13 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
       } else {
         doc.text(hsn.hsn, 40, hsnCurrentY + 6);
         doc.text(`INR ${hsn.taxableAmount.toFixed(2)}`, 120, hsnCurrentY + 6);
-        doc.text(`${hsn.gstRate/2}%`, 200, hsnCurrentY + 6);
+        doc.text(`${hsn.gstRate / 2}%`, 200, hsnCurrentY + 6);
         doc.text(`INR ${hsn.cgstAmount.toFixed(2)}`, 260, hsnCurrentY + 6);
-        doc.text(`${hsn.gstRate/2}%`, 330, hsnCurrentY + 6);
+        doc.text(`${hsn.gstRate / 2}%`, 330, hsnCurrentY + 6);
         doc.text(`INR ${hsn.sgstAmount.toFixed(2)}`, 390, hsnCurrentY + 6);
         doc.text(`INR ${hsn.totalAmount.toFixed(2)}`, 460, hsnCurrentY + 6);
       }
-      
+
       hsnCurrentY += hsnTableRowHeight;
       if (index < hsnSummaryArray.length - 1) {
         doc.moveTo(30, hsnCurrentY).lineTo(565, hsnCurrentY).stroke();
@@ -582,20 +582,20 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
     // Amount in Words
     drawBox(30, currentY, 535, 30);
     doc.fontSize(9).font('Helvetica-Bold')
-       .text('Invoice Amount In Words', 40, currentY + 8);
+      .text('Invoice Amount In Words', 40, currentY + 8);
     doc.fontSize(8).font('Helvetica')
-       .text(numberToWords(Math.floor(populatedInvoice.total || 0)), 40, currentY + 20);
+      .text(numberToWords(Math.floor(populatedInvoice.total || 0)), 40, currentY + 20);
 
     currentY += 45;
 
     // Footer Section - Bank Details and Terms
     const footerY = currentY;
     const footerHeight = 120;
-    
+
     drawBox(30, footerY, 267, footerHeight);
     doc.fontSize(9).font('Helvetica-Bold')
-       .text('Bank Details', 40, footerY + 10);
-    
+      .text('Bank Details', 40, footerY + 10);
+
     doc.fontSize(8).font('Helvetica');
     let bankDetailsY = footerY + 25;
     doc.text(`Name: ${companySettings.bankDetails?.bankName || 'Bank Of Baroda, Motiparabdi,'}`, 40, bankDetailsY);
@@ -610,13 +610,13 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
 
     drawBox(297, footerY, 268, footerHeight);
     doc.fontSize(9).font('Helvetica-Bold')
-       .text('Terms and conditions', 307, footerY + 10);
-    
-    doc.fontSize(8).font('Helvetica')
-       .text(companySettings.termsAndConditions || 'Thank you for doing business with us.', 307, footerY + 25);
+      .text('Terms and conditions', 307, footerY + 10);
 
     doc.fontSize(8).font('Helvetica')
-       .text(`For: ${companySettings.companyName || 'COMPANY NAME'}`, 450, footerY + 60, { align: 'right' });
+      .text(companySettings.termsAndConditions || 'Thank you for doing business with us.', 307, footerY + 25);
+
+    doc.fontSize(8).font('Helvetica')
+      .text(`For: ${companySettings.companyName || 'COMPANY NAME'}`, 450, footerY + 60, { align: 'right' });
 
     if (companySettings.companySign && fs.existsSync(companySettings.companySign)) {
       try {
@@ -625,15 +625,15 @@ const taxableAmount = price * quantity * (1 - (discount / 100));
         console.warn('Failed to add company signature:', signError.message);
       }
     }
-    
+
     doc.fontSize(8).font('Helvetica-Bold')
-       .text('Authorized Signatory', 450, footerY + 105, { align: 'right' });
+      .text('Authorized Signatory', 450, footerY + 105, { align: 'right' });
 
     doc.end();
     console.log('PDF generated successfully for invoice:', { id: populatedInvoice._id, databaseName });
   } catch (error) {
-    console.error('Error generating invoice PDF:', { 
-      error: error.message, 
+    console.error('Error generating invoice PDF:', {
+      error: error.message,
       stack: error.stack,
       databaseName: req.databaseName,
       invoiceId: req.params.id
@@ -710,8 +710,8 @@ router.post('/', async (req, res) => {
       throw new Error('Invalid request: Grand total discount cannot be negative');
     }
 
-    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== '' 
-      ? parseFloat(totalReceived) 
+    const parsedTotalReceived = totalReceived !== undefined && totalReceived !== null && totalReceived !== ''
+      ? parseFloat(totalReceived)
       : null;
 
     if (parsedTotalReceived !== null && parsedTotalReceived < 0) {
@@ -854,11 +854,11 @@ router.put('/:id', async (req, res) => {
     invoice.totalReceived = parsedTotalReceived;
     invoice.totalPendingAmount = totalPendingAmount;
     await invoice.save();
-    console.log('Invoice updated:', { 
-      id: invoice._id, 
-      totalReceived: parsedTotalReceived, 
-      totalPendingAmount, 
-      databaseName 
+    console.log('Invoice updated:', {
+      id: invoice._id,
+      totalReceived: parsedTotalReceived,
+      totalPendingAmount,
+      databaseName
     });
 
     // Create account entry for additional payment

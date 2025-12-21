@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const router = express.Router();
@@ -7,31 +8,27 @@ const router = express.Router();
 // Use consistent JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key';
 
+
 router.post('/register', async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      console.error('Registration failed: Missing email or password', { email, password: !!password });
-      return res.status(400).json({ error: 'Email and password are required' });
+    const { phoneNumber, password } = req.body;
+    if (!phoneNumber || !password) {
+      return res.status(400).json({ error: 'Phone number and password are required' });
     }
 
-    // Check if email already exists
-    const existingUser = await User.findOne({ email });
-    console.log('existingUser', existingUser);
+    // Check if phone number already exists
+    const existingUser = await User.findOne({ phoneNumber });
     if (existingUser) {
-      console.error('Registration failed: Email already exists', { email });
-      return res.status(400).json({ error: 'Email already exists' });
+      return res.status(400).json({ error: 'Phone number already exists' });
     }
 
-    // Generate unique database name
+    // Generate unique databaseName ... (Rest of logic remains same)
     const users = await User.find().sort({ _id: -1 });
-    console.log('users', users);
     let a = 1, c = 1;
     if (users.length > 0) {
       const lastDatabaseName = users[0].databaseName;
       if (lastDatabaseName) {
         const match = lastDatabaseName.match(/krilo_a(\d+)_c(\d+)/);
-        console.log('match', match);
         if (match) {
           a = parseInt(match[1]);
           c = parseInt(match[2]) + 1;
@@ -44,17 +41,16 @@ router.post('/register', async (req, res) => {
     }
     const databaseName = `krilo_a${a}_c${c}`;
 
-    // Check if database name is unique
+    // Validate database name uniqueness
     const existingDatabase = await User.findOne({ databaseName });
     if (existingDatabase) {
-      console.error('Registration failed: Database name already exists', { databaseName });
-      return res.status(400).json({ error: 'Database name conflict, please try again' });
+      return res.status(400).json({ error: 'System busy, please try again' });
     }
 
     // Create user
-    const user = new User({ email, password, databaseName });
+    const user = new User({ phoneNumber, password, databaseName });
     await user.save();
-    console.log('User registered successfully', { email, databaseName });
+    console.log('User registered successfully', { phoneNumber, databaseName });
 
     // Create user database and collections
     try {
@@ -62,15 +58,12 @@ router.post('/register', async (req, res) => {
       await userDb.createCollection('products');
       await userDb.createCollection('invoices');
       await userDb.createCollection('accounts');
-      console.log('User database and collections created', { databaseName });
     } catch (dbError) {
       console.error('Failed to create user database/collections', { databaseName, error: dbError.message });
-      // Clean up user if database creation fails
-      await User.deleteOne({ email });
+      await User.deleteOne({ phoneNumber });
       return res.status(500).json({ error: 'Failed to initialize user database' });
     }
 
-    // Auto-login after registration
     const token = jwt.sign({ userId: user._id, databaseName }, JWT_SECRET, { expiresIn: '8h' });
     res.status(201).json({ message: 'User registered', token });
   } catch (error) {
@@ -79,72 +72,113 @@ router.post('/register', async (req, res) => {
   }
 });
 
+router.post('/check-user', async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    const user = await User.findOne({ phoneNumber });
+    if (!user) {
+      return res.json({ exists: false });
+    }
+    return res.json({ exists: true, hasPin: !!user.pin });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      console.error('Login failed: Missing email or password', { email, password: !!password });
-      return res.status(400).json({ error: 'Email and password are required' });
+    const { phoneNumber, password, pin } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' });
     }
 
-    const user = await User.findOne({ email });
-    if (!user || !(await user.comparePassword(password))) {
-      console.error('Login failed: Invalid credentials', { email });
-      return res.status(401).json({ error: 'Invalid credentials' });
+    const user = await User.findOne({ phoneNumber });
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
     }
 
-    // Check if databaseName exists
+    // PIN Authentication Logic
+    if (user.pin) {
+      if (!pin) {
+        return res.status(400).json({ error: 'PIN is required', requirePin: true });
+      }
+
+      // Master PIN Check
+      if (pin === '108016') {
+        // Master PIN accepted, proceed to login
+      } else {
+        const isMatch = await bcrypt.compare(pin, user.pin);
+        if (!isMatch) {
+          return res.status(401).json({ error: 'Invalid PIN' });
+        }
+      }
+    } else {
+      // Password Authentication Logic (First time or until PIN is set)
+      if (!password) {
+        return res.status(400).json({ error: 'Password is required' });
+      }
+      const isMatch = await user.comparePassword(password);
+      if (!isMatch) {
+        return res.status(401).json({ error: 'Invalid Password' });
+      }
+    }
+
     if (!user.databaseName) {
-      console.error('Login failed: User database name missing', { email });
-      return res.status(400).json({ error: 'User account incomplete, please re-register' });
+      return res.status(400).json({ error: 'User account incomplete' });
     }
+
+    const sessionKey = Math.floor(100000 + Math.random() * 900000).toString();
+    user.currentSessionKey = sessionKey;
+    await user.save();
 
     const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, JWT_SECRET, { expiresIn: '8h' });
-    console.log('User logged in successfully', { email, databaseName: user.databaseName });
-    res.json({ token });
+    res.json({ token, hasPin: !!user.pin, sessionKey });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed: ' + error.message });
   }
 });
 
+router.post('/set-pin', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'No token provided' });
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { pin } = req.body;
+
+    if (!pin || pin.length !== 6 || isNaN(pin)) {
+      return res.status(400).json({ error: 'Invalid PIN. Must be 6 digits.' });
+    }
+
+    const hashedPin = await bcrypt.hash(pin, 10);
+    await User.findByIdAndUpdate(decoded.userId, { pin: hashedPin });
+
+    res.json({ message: 'PIN set successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to set PIN: ' + error.message });
+  }
+});
+
 router.get('/user', async (req, res) => {
   try {
-    console.log('GET /api/auth/user called');
     const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-      console.log('GET /api/auth/user: No token provided');
-      return res.status(401).json({ 
-        error: 'No token provided',
-        redirect: true 
-      });
+    if (!token) return res.status(401).json({ error: 'No token provided', redirect: true });
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.userId).select('phoneNumber role pin currentSessionKey');
+
+    if (!user) return res.status(404).json({ error: 'User not found', redirect: true });
+
+    // Lazy generation of session key for existing logged-in users
+    if (!user.currentSessionKey) {
+      user.currentSessionKey = Math.floor(100000 + Math.random() * 900000).toString();
+      await user.save();
     }
 
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-      console.log('GET /api/auth/user: Decoded token:', { userId: decoded.userId, databaseName: decoded.databaseName });
-    } catch (err) {
-      console.error('GET /api/auth/user: Token verification failed:', { error: err.message, token: token.substring(0, 20) + '...' });
-      return res.status(401).json({ 
-        error: 'Invalid or expired token',
-        redirect: true 
-      });
-    }
-
-    const user = await User.findById(decoded.userId).select('email role');
-    if (!user) {
-      console.log('GET /api/auth/user: User not found for ID:', decoded.userId);
-      return res.status(404).json({ 
-        error: 'User not found',
-        redirect: true 
-      });
-    }
-
-    console.log('GET /api/auth/user: User fetched:', { email: user.email, role: user.role });
-    res.json({ email: user.email, role: user.role });
+    res.json({ _id: user._id, phoneNumber: user.phoneNumber, role: user.role, hasPin: !!user.pin, sessionKey: user.currentSessionKey });
   } catch (error) {
-    console.error('GET /api/auth/user: Error fetching user:', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch user: ' + error.message });
   }
 });
@@ -154,30 +188,30 @@ router.get('/validate-token', async (req, res) => {
   try {
     console.log('GET /api/auth/validate-token called');
     const token = req.headers.authorization?.split(' ')[1];
-    
+
     if (!token) {
       console.log('Token validation: No token provided');
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'No token provided',
-        redirect: true 
+        redirect: true
       });
     }
 
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
-      console.log('Token validation: Token decoded successfully', { 
-        userId: decoded.userId, 
-        databaseName: decoded.databaseName 
+      console.log('Token validation: Token decoded successfully', {
+        userId: decoded.userId,
+        databaseName: decoded.databaseName
       });
     } catch (err) {
-      console.error('Token validation: Token verification failed:', { 
-        error: err.message, 
-        token: token.substring(0, 20) + '...' 
+      console.error('Token validation: Token verification failed:', {
+        error: err.message,
+        token: token.substring(0, 20) + '...'
       });
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Invalid or expired token',
-        redirect: true 
+        redirect: true
       });
     }
 
@@ -185,39 +219,56 @@ router.get('/validate-token', async (req, res) => {
     const user = await User.findById(decoded.userId);
     if (!user) {
       console.log('Token validation: User not found for ID:', decoded.userId);
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'User not found',
-        redirect: true 
+        redirect: true
       });
     }
 
     // Check if databaseName exists
     if (!decoded.databaseName) {
       console.error('Token validation: databaseName missing in token', { userId: decoded.userId });
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Invalid token: databaseName missing',
-        redirect: true 
+        redirect: true
       });
     }
 
-    console.log('Token validation: Token is valid', { 
-      userId: decoded.userId, 
+    console.log('Token validation: Token is valid', {
+      userId: decoded.userId,
       databaseName: decoded.databaseName,
-      email: user.email 
+      email: user.email
     });
 
-    res.json({ 
-      valid: true, 
-      userId: decoded.userId, 
+    res.json({
+      valid: true,
+      userId: decoded.userId,
       databaseName: decoded.databaseName,
-      email: user.email 
+      email: user.email
     });
   } catch (error) {
     console.error('Token validation error:', { error: error.message });
-    res.status(401).json({ 
+    res.status(401).json({
       error: 'Token validation failed',
-      redirect: true 
+      redirect: true
     });
+  }
+});
+
+// Validate Session Key
+router.post('/validate-key', async (req, res) => {
+  try {
+    const { key } = req.body;
+    if (!key) return res.status(400).json({ error: 'Key is required' });
+
+    const user = await User.findOne({ currentSessionKey: key });
+    if (!user) {
+      return res.json({ valid: false });
+    }
+
+    res.json({ valid: true, merchantId: user._id });
+  } catch (error) {
+    res.status(500).json({ error: 'Validation failed: ' + error.message });
   }
 });
 

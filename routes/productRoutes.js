@@ -27,11 +27,11 @@ router.post('/', async (req, res) => {
     }
     console.log('Adding product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, stock, gst } = req.body;
+    const { name, category, price, purchasePrice, stock, gst } = req.body;
     if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
       throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    const product = new Product({ name, category, price, stock, gst });
+    const product = new Product({ name, category, price, purchasePrice: purchasePrice || 0, stock, gst });
     await product.save();
     console.log('Product added:', { name, stock, gst, databaseName });
     res.json(product);
@@ -49,14 +49,14 @@ router.put('/:id', async (req, res) => {
     }
     console.log('Updating product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, stock, gst } = req.body;
+    const { name, category, price, purchasePrice, stock, gst } = req.body;
     if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
       throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    console.log('Received update payload:', { id: req.params.id, name, category, price, stock, gst });
+    console.log('Received update payload:', { id: req.params.id, name, category, price, purchasePrice, stock, gst });
     const product = await Product.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, category, price, stock, gst } },
+      { $set: { name, category, price, purchasePrice: purchasePrice || 0, stock, gst } },
       { new: true, runValidators: true }
     );
     if (!product) {

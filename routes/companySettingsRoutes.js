@@ -50,7 +50,7 @@ router.post('/', upload.fields([
     const { CompanySettings } = registerModels(databaseName);
     console.log('CompanySettings model retrieved for:', databaseName);
 
-    const { companyName, address, country, state, city, pincode, GSTIN, termsAndConditions, bankName, accountNumber, IFSC, branch, contactNumber } = req.body;
+    const { companyName, address, country, state, city, pincode, GSTIN, termsAndConditions, bankName, accountNumber, IFSC, branch, contactNumber, upiId, upiName } = req.body;
 
     // Validate required fields
     if (!companyName || !address || !country || !state || !city || !pincode) {
@@ -74,6 +74,8 @@ router.post('/', upload.fields([
         branch: branch ? branch.trim() : '',
       },
       contactNumber: contactNumber ? contactNumber.trim() : '',
+      upiId: upiId ? upiId.trim() : '',
+      upiName: upiName ? upiName.trim() : '',
     };
 
     // Handle file uploads

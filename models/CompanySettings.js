@@ -60,6 +60,32 @@ const companySettingsSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  upiId: {
+    type: String,
+    trim: true,
+    default: '',
+    validate: {
+      validator: function (v) {
+        // If upiName is present, upiId is required.
+        if (this.upiName && !v) return false;
+        return true;
+      },
+      message: 'UPI ID is required when UPI Name is provided.'
+    }
+  },
+  upiName: {
+    type: String,
+    trim: true,
+    default: '',
+    validate: {
+      validator: function (v) {
+        // If upiId is present, upiName is required.
+        if (this.upiId && !v) return false;
+        return true;
+      },
+      message: 'UPI Name is required when UPI ID is provided.'
+    }
+  },
 }, {
   timestamps: true,
 });
