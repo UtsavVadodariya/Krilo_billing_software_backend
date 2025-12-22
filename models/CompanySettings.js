@@ -89,6 +89,36 @@ const companySettingsSchema = new mongoose.Schema({
   printFormat: {
     type: String,
     enum: ['POS', 'A4', 'A5'],
+  },
+  invoiceFormat: {
+    strategy: {
+      type: String,
+      enum: ['sequential', 'random'],
+      default: 'sequential'
+    },
+    prefix: {
+      type: String,
+      trim: true,
+      default: '' // Default no prefix
+    },
+    showFinancialYear: {
+      type: Boolean,
+      default: false // Default no FY
+    },
+    currentSequence: {
+      type: Number,
+      default: 1
+    },
+    randomLength: {
+      type: Number,
+      default: 6,
+      min: 4,
+      max: 12
+    }
+  },
+  printFormat: {
+    type: String,
+    enum: ['POS', 'A4', 'A5'],
     default: 'POS'
   },
 }, {

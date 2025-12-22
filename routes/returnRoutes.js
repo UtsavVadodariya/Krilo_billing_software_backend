@@ -39,37 +39,57 @@ router.post('/', async (req, res) => {
         // Fetch all previous returns for this invoice
         const existingReturns = await Return.find({ originalInvoiceId });
 
-        // Calculate previously returned quantities per product
-        const previouslyReturnedMap = {}; // { productId: totalReturnedQty }
+        // Calculate previously returned quantities per product (and size)
+        const previouslyReturnedMap = {}; // { "productId-size": totalReturnedQty }
         existingReturns.forEach(ret => {
             ret.products.forEach(item => {
                 const pId = item.productId.toString();
-                previouslyReturnedMap[pId] = (previouslyReturnedMap[pId] || 0) + item.quantity;
+                const size = item.size ? item.size.toString() : 'N/A';
+                const key = `${pId}-${size}`;
+                previouslyReturnedMap[key] = (previouslyReturnedMap[key] || 0) + item.quantity;
             });
         });
 
         // Validate each item in the current request
         for (const item of products) {
             const pId = item.productId.toString();
+            const itemSize = item.size ? item.size.toString() : 'N/A';
+            const key = `${pId}-${itemSize}`;
 
-            // Find original purchased quantity
-            const originalProductIndex = invoice.products.findIndex(p => p.toString() === pId);
-            if (originalProductIndex === -1) {
-                return res.status(400).json({ error: `Product ${item.productId} not found in original invoice` });
+            // Calculate original purchased quantity for this specific product ID AND Size
+            let originalQty = 0;
+            if (invoice.products && invoice.quantities) {
+                invoice.products.forEach((invProdId, index) => {
+                    if (invProdId.toString() === pId) {
+                        // Check if sizes match
+                        const invSize = (invoice.sizes && invoice.sizes[index]) ? invoice.sizes[index].toString() : 'N/A';
+                        if (invSize === itemSize) {
+                            originalQty += invoice.quantities[index];
+                        }
+                    }
+                });
             }
-            const originalQty = invoice.quantities[originalProductIndex];
 
-            const previouslyReturnedQty = previouslyReturnedMap[pId] || 0;
+            if (originalQty === 0) {
+                return res.status(400).json({ error: `Product ${item.productId} (Size: ${item.size || 'N/A'}) not found in original invoice` });
+            }
+
+            const previouslyReturnedQty = previouslyReturnedMap[key] || 0;
             const remainingQty = originalQty - previouslyReturnedQty;
 
             if (item.quantity > remainingQty) {
                 return res.status(400).json({
-                    error: `Cannot return ${item.quantity} of product. Only ${remainingQty} remaining from original purchase.`
+                    error: `Cannot return ${item.quantity} of product. Only ${remainingQty} remaining from original purchase (Size: ${item.size || 'N/A'}).`
                 });
             }
         }
 
         // 1. Create Return Record
+        // Ensure size is included in the stored product objects
+        // The item object in 'products' array from req.body should already have it, 
+        // but we can map explicitly to be safe if strictly picking fields.
+        // Mongoose schema will pick it up if present.
+
         const returnRecord = new Return({
             originalInvoiceId,
             customerId,
@@ -86,12 +106,26 @@ router.post('/', async (req, res) => {
 
             const product = await Product.findById(item.productId);
             if (product) {
-                // If it was a generic product update stock
-                product.stock += item.quantity;
-
                 // If the item had a specific variant size (not passed in generic structure but for future)
-                // logic for variants would go here. For now assuming main referencing.
+                // For now, if we don't have explicit size-based stock management in Product model, 
+                // we just increment main stock.
+                // TODO: If Product model supports sizes array with stock, find and increment that specific size.
 
+                // Check if product has sizes array in its schema (assuming standard Krilo structure)
+                // If it does, find index and increment.
+                if (item.size && product.sizes && Array.isArray(product.sizes)) {
+                    const sizeIndex = product.sizes.findIndex(s => s.size === item.size);
+                    if (sizeIndex !== -1) {
+                        // Careful: product.sizes might be objects [{size: 'M', quantity: 10}] or strings.
+                        // Checking standard Product.js... usually it's array of objects for stock.
+                        // Let's assume standard behavior: update both global stock and variant stock if structure exists.
+                        if (product.sizes[sizeIndex].quantity !== undefined) {
+                            product.sizes[sizeIndex].quantity += parseInt(item.quantity);
+                        }
+                    }
+                }
+
+                product.stock += parseInt(item.quantity);
                 await product.save();
             }
         }

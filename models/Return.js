@@ -29,6 +29,10 @@ const returnSchema = new mongoose.Schema({
         reason: {
             type: String,
             default: 'Defective/Exchange'
+        },
+        size: {
+            type: String,
+            default: null
         }
     }],
     totalRefundAmount: {

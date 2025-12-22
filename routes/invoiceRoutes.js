@@ -685,7 +685,7 @@ router.post('/', async (req, res) => {
     console.log('Adding invoice for database:', databaseName);
     console.log('Received payload:', req.body);
 
-    const { Product, Invoice, Account, Customer } = registerModels(databaseName);
+    const { Product, Invoice, Account, Customer, CompanySettings } = registerModels(databaseName);
 
     const {
       customerId,
@@ -771,37 +771,71 @@ router.post('/', async (req, res) => {
     }
 
     // --- Generate Custom Invoice Number ---
-    // 1. Determine Financial Year (e.g., "2024-25")
-    const currentDate = new Date();
-    const currentMonth = currentDate.getMonth(); // 0-11 (April is 3)
-    const currentYear = currentDate.getFullYear();
-    let fyStartYear = currentYear;
-    if (currentMonth < 3) { // Jan, Feb, March -> Previous FY
-      fyStartYear = currentYear - 1;
+    const companySettings = await CompanySettings.findOne(); // Fetch settings
+    let invoiceNumber = '';
+    let usedSequence = null;
+    let nextSeriesNum = null;
+    let financialYear = '';
+
+    if (companySettings && companySettings.invoiceFormat && companySettings.invoiceFormat.strategy === 'random') {
+      // --- RANDOM STRATEGY ---
+      const length = companySettings.invoiceFormat.randomLength || 6;
+      const prefix = companySettings.invoiceFormat.prefix || '';
+
+      const generateRandomString = (len) => {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let result = '';
+        for (let i = 0; i < len; i++) {
+          result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
+      };
+
+      let isUnique = false;
+      let retries = 0;
+      while (!isUnique && retries < 10) {
+        const randomStr = generateRandomString(length);
+        invoiceNumber = `${prefix}${randomStr}`;
+        const existing = await Invoice.findOne({ invoiceNumber });
+        if (!existing) isUnique = true;
+        retries++;
+      }
+      if (!isUnique) throw new Error('Failed to generate unique invoice number. Please try again.');
+
+    } else {
+      // --- SEQUENTIAL STRATEGY (Default) ---
+      nextSeriesNum = 1;
+      const prefix = companySettings?.invoiceFormat?.prefix || ''; // Default ''
+      const showFY = companySettings?.invoiceFormat?.showFinancialYear || false; // Default false
+
+      // 1. Determine Financial Year (if needed)
+      financialYear = '';
+      if (showFY) {
+        const currentDate = new Date();
+        const currentMonth = currentDate.getMonth();
+        const currentYear = currentDate.getFullYear();
+        let fyStartYear = currentYear;
+        if (currentMonth < 3) fyStartYear = currentYear - 1;
+        const fyEndYear = fyStartYear + 1;
+        financialYear = `/${fyStartYear}-${fyEndYear.toString().slice(-2)}`;
+      }
+
+      // 2. Get Next Sequence
+      // We rely on CompanySettings.currentSequence as the source of truth for the *next* number
+      if (companySettings && companySettings.invoiceFormat && companySettings.invoiceFormat.currentSequence) {
+        nextSeriesNum = companySettings.invoiceFormat.currentSequence;
+      } else {
+        // Fallback or initialization
+        const lastInvoice = await Invoice.findOne({ type: type }).sort({ seriesNumber: -1 });
+        nextSeriesNum = lastInvoice ? (lastInvoice.seriesNumber + 1) : 1;
+      }
+
+      usedSequence = nextSeriesNum; // Track this to increment later
+
+      // 3. Format: PREFIX + NUMBER + FY (Optional)
+      // Example: "INV-12/2024-25" or just "12"
+      invoiceNumber = `${prefix}${nextSeriesNum}${financialYear}`;
     }
-    const fyEndYear = fyStartYear + 1;
-    const financialYear = `${fyStartYear}-${fyEndYear.toString().slice(-2)}`; // "2024-25"
-
-    // 2. Determine Prefix
-    let prefix = 'INV';
-    if (type === 'sales_invoice') prefix = 'INV';
-    else if (type === 'purchase_invoice') prefix = 'PI';
-    else if (type === 'quotation') prefix = 'QUO';
-    else if (type === 'sales_order') prefix = 'ORD';
-
-    // 3. Find last invoice of this type in this FY
-    const lastInvoice = await Invoice.findOne({
-      type: type,
-      financialYear: financialYear
-    }).sort({ seriesNumber: -1 });
-
-    let nextSeriesNum = 1;
-    if (lastInvoice && lastInvoice.seriesNumber) {
-      nextSeriesNum = lastInvoice.seriesNumber + 1;
-    }
-
-    // 4. Format Number: PREFIX/001/FY
-    const invoiceNumber = `${prefix}/${nextSeriesNum.toString().padStart(3, '0')}/${financialYear}`;
 
     // Handle Credit Usage (New)
     let creditUsed = 0;
@@ -859,6 +893,13 @@ router.post('/', async (req, res) => {
 
     await invoice.save();
     console.log('Invoice created:', { id: invoice._id, total: parsedTotal, databaseName });
+
+    // --- Increment Sequence ---
+    if (usedSequence !== null && companySettings) {
+      if (!companySettings.invoiceFormat) companySettings.invoiceFormat = {};
+      companySettings.invoiceFormat.currentSequence = usedSequence + 1;
+      await companySettings.save();
+    }
 
     // Update product stock (if sales/purchase)
     if (type === 'sales_invoice') {

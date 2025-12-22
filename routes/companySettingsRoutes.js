@@ -79,6 +79,16 @@ router.post('/', upload.fields([
       printFormat: req.body.printFormat || 'POS',
     };
 
+    if (req.body.invoiceFormat) {
+      try {
+        updateData.invoiceFormat = typeof req.body.invoiceFormat === 'string'
+          ? JSON.parse(req.body.invoiceFormat)
+          : req.body.invoiceFormat;
+      } catch (e) {
+        console.error('Failed to parse invoiceFormat:', e);
+      }
+    }
+
     // Handle file uploads
     if (req.files.companyLogo) {
       updateData.companyLogo = req.files.companyLogo[0].path;
