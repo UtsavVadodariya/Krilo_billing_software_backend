@@ -86,6 +86,11 @@ const companySettingsSchema = new mongoose.Schema({
       message: 'UPI Name is required when UPI ID is provided.'
     }
   },
+  printFormat: {
+    type: String,
+    enum: ['POS', 'A4', 'A5'],
+    default: 'POS'
+  },
 }, {
   timestamps: true,
 });

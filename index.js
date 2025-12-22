@@ -9,6 +9,7 @@ const invoiceRoutes = require('./routes/invoiceRoutes');
 const accountRoutes = require('./routes/accountRoutes');
 const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
+const returnRoutes = require('./routes/returnRoutes'); // Import return routes
 const companySettingsRoutes = require('./routes/companySettingsRoutes');
 const authMiddleware = require('./middleware/auth');
 const { mongooseConnectIndex, baseUrl } = require('./utils/baseUrl');
@@ -16,15 +17,10 @@ const { mongooseConnectIndex, baseUrl } = require('./utils/baseUrl');
 const app = express();
 
 // CORS configuration
-// replace your current CORS setup with this
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://krilobilling.easywayitsolutions.com'
-];
-
 app.use(cors({
   origin: function (origin, callback) {
     // Allow any origin for local development/testing on network
+    // You can restrict this in production
     return callback(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -32,15 +28,11 @@ app.use(cors({
   credentials: true,
 }));
 
-
 // Serve static files with explicit CORS headers for /uploads
 app.use('/uploads', (req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', `${baseUrl}`);
+  res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all for uploads
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  console.log(`Serving file request: ${req.path}`); // Log file requests
-  const filePath = path.join(__dirname, 'Uploads', req.path);
-  console.log(`Attempting to serve file: ${filePath}`); // Log file path
   express.static(path.join(__dirname, 'Uploads'))(req, res, next);
 });
 
@@ -53,6 +45,7 @@ app.use('/api/products', authMiddleware, productRoutes);
 app.use('/api/invoices', authMiddleware, invoiceRoutes);
 app.use('/api/accounts', authMiddleware, accountRoutes);
 app.use('/api/customers', authMiddleware, customerRoutes);
+app.use('/api/returns', authMiddleware, returnRoutes); // Register return routes
 app.use('/api/company-settings', authMiddleware, companySettingsRoutes);
 
 // Connect to MongoDB

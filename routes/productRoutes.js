@@ -27,11 +27,18 @@ router.post('/', async (req, res) => {
     }
     console.log('Adding product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, purchasePrice, stock, gst } = req.body;
-    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
+    const { name, category, price, purchasePrice, stock, gst, variants } = req.body;
+
+    // Calculate total stock if variants are provided
+    let finalStock = stock;
+    if (variants && Array.isArray(variants) && variants.length > 0) {
+      finalStock = variants.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0);
+    }
+
+    if (!name || !category || isNaN(price) || isNaN(finalStock) || finalStock < 0 || isNaN(gst) || gst < 0) {
       throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    const product = new Product({ name, category, price, purchasePrice: purchasePrice || 0, stock, gst });
+    const product = new Product({ name, category, price, purchasePrice: purchasePrice || 0, stock: finalStock, gst, variants });
     await product.save();
     console.log('Product added:', { name, stock, gst, databaseName });
     res.json(product);
@@ -49,14 +56,21 @@ router.put('/:id', async (req, res) => {
     }
     console.log('Updating product for database:', databaseName);
     const { Product } = registerModels(databaseName);
-    const { name, category, price, purchasePrice, stock, gst } = req.body;
-    if (!name || !category || isNaN(price) || isNaN(stock) || stock < 0 || isNaN(gst) || gst < 0) {
+    const { name, category, price, purchasePrice, stock, gst, variants } = req.body;
+
+    // Calculate total stock if variants are provided
+    let finalStock = stock;
+    if (variants && Array.isArray(variants) && variants.length > 0) {
+      finalStock = variants.reduce((sum, v) => sum + (parseInt(v.stock) || 0), 0);
+    }
+
+    if (!name || !category || isNaN(price) || isNaN(finalStock) || finalStock < 0 || isNaN(gst) || gst < 0) {
       throw new Error('Invalid product data: name, category, price, stock (non-negative), and gst (non-negative) are required');
     }
-    console.log('Received update payload:', { id: req.params.id, name, category, price, purchasePrice, stock, gst });
+    console.log('Received update payload:', { id: req.params.id, name, category, price, purchasePrice, finalStock, gst, variants });
     const product = await Product.findByIdAndUpdate(
       req.params.id,
-      { $set: { name, category, price, purchasePrice: purchasePrice || 0, stock, gst } },
+      { $set: { name, category, price, purchasePrice: purchasePrice || 0, stock: finalStock, gst, variants } },
       { new: true, runValidators: true }
     );
     if (!product) {

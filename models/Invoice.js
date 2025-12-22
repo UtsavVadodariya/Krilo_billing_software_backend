@@ -18,6 +18,22 @@ const invoiceSchema = new mongoose.Schema({
     enum: ['sales_invoice', 'purchase_invoice', 'quotation', 'sales_order'],
     required: [true, 'Invoice type is required'],
   },
+  paymentMode: {
+    type: String,
+    enum: ['Cash', 'Credit', 'UPI', 'Card', 'Mixed'],
+    default: 'Cash',
+  },
+  invoiceNumber: {
+    type: String,
+    // required: true, // Make required after migration or ensure logic handles it
+    unique: true,
+  },
+  seriesNumber: {
+    type: Number,
+  },
+  financialYear: {
+    type: String,
+  },
   products: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
@@ -37,13 +53,19 @@ const invoiceSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: [0, 'Discount cannot be negative'],
-    max: [100, 'Discount cannot exceed 100%'],
+    // Removed max: 100 validation to support fixed amount discounts
+  }],
+  discountTypes: [{
+    type: String,
+    enum: ['percentage', 'fixed'],
+    default: 'percentage',
   }],
   gstAmounts: [{
     type: Number,
     default: 0,
     min: [0, 'GST amount cannot be negative'],
   }],
+  sizes: [{ type: String }],
   total: {
     type: Number,
     required: true,

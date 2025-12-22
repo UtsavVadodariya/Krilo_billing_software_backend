@@ -7,5 +7,11 @@ const productSchema = new mongoose.Schema({
   stock: { type: Number, required: true, min: 0 },
   gst: { type: Number, required: true, min: 0, default: 0 },
   description: { type: String },
+  variants: [{
+    size: { type: String, required: true },
+    stock: { type: Number, required: true, min: 0 },
+    price: { type: Number, min: 0 }, // Variant specific selling price
+    purchasePrice: { type: Number, min: 0 } // Variant specific buying price
+  }]
 });
 module.exports = productSchema;

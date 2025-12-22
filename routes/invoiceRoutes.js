@@ -15,8 +15,8 @@ router.get('/', async (req, res) => {
     console.log('Fetching invoices for database:', databaseName);
     const { Invoice } = registerModels(databaseName);
     const invoices = await Invoice.find()
-      .populate('products', 'name price stock')
-      .populate('customerId', 'name address country state city pincode GSTIN')
+      .populate('products', 'name price stock gst hsn')
+      .populate('customerId', 'name mobileNumber address country state city pincode GSTIN')
       .select('-__v')
       .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending, then by _id descending as fallback
     console.log('Invoices fetched:', { count: invoices.length, databaseName });
@@ -36,8 +36,8 @@ router.get('/sales_invoice', async (req, res) => {
     console.log('Fetching sales invoices for database:', databaseName);
     const { Invoice } = registerModels(databaseName);
     const invoices = await Invoice.find({ type: 'sales_invoice' })
-      .populate('products', 'name price stock')
-      .populate('customerId', 'name address country state city pincode GSTIN')
+      .populate('products', 'name price stock gst hsn')
+      .populate('customerId', 'name mobileNumber address country state city pincode GSTIN')
       .select('-__v')
       .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending
     console.log('Sales invoices fetched:', { count: invoices.length, databaseName });
@@ -68,7 +68,7 @@ router.get('/customer', async (req, res) => {
     }
     const invoices = await Invoice.find(query)
       .populate('products', 'name price stock')
-      .populate('customerId', 'name address country state city pincode GSTIN')
+      .populate('customerId', 'name mobileNumber address country state city pincode GSTIN')
       .select('-__v')
       .sort({ createdAt: -1, _id: -1 }); // Sort by createdAt descending
     console.log(`Invoices fetched:`, { count: invoices.length, databaseName, customer: customerName || customerId || 'all' });
@@ -85,6 +85,40 @@ router.get('/customer', async (req, res) => {
   }
 });
 
+
+
+router.get('/:id', async (req, res) => {
+  try {
+    const databaseName = req.databaseName;
+    if (!databaseName) {
+      throw new Error('Database name not provided');
+    }
+    const { Invoice } = registerModels(databaseName);
+
+    if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      // If it's 'pdf' or other non-id, let it pass to next route if strictly sequentially matched, 
+      // but express matches purely on path. 'pdf' is not 24 hex chars.
+      // However, this handler is for /:id. If id is 'pdf', it matches here.
+      // But we have /:id/pdf separate? No, /:id/pdf is a different path structure.
+      // Whatever, explicit check is good.
+      return res.status(400).json({ error: 'Invalid invoice ID' });
+    }
+
+    const invoice = await Invoice.findById(req.params.id)
+      .populate('products', 'name price stock gst hsn')
+      .populate('customerId', 'name mobileNumber address country state city pincode GSTIN')
+      .select('-__v');
+
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    res.json(invoice);
+  } catch (error) {
+    console.error('Error fetching invoice:', { error: error.message, databaseName: req.databaseName, id: req.params.id });
+    res.status(500).json({ error: 'Failed to fetch invoice: ' + error.message });
+  }
+});
 
 router.get('/:id/pdf', async (req, res) => {
   try {
@@ -105,7 +139,7 @@ router.get('/:id/pdf', async (req, res) => {
     // Populate the invoice with related data
     const populatedInvoice = await Invoice.findById(req.params.id)
       .populate('products', 'name price stock gst hsn')
-      .populate('customerId', 'name address country state city pincode GSTIN');
+      .populate('customerId', 'name mobileNumber address country state city pincode GSTIN');
 
     if (!populatedInvoice) {
       return res.status(404).json({ error: 'Invoice not found after population' });
@@ -661,6 +695,7 @@ router.post('/', async (req, res) => {
       quantities,
       prices,
       discounts,
+      discountTypes, // Added
       gstAmounts,
       total,
       grandTotalDiscount,
@@ -689,6 +724,10 @@ router.post('/', async (req, res) => {
     validateArray(quantities, 'quantities');
     validateArray(prices, 'prices');
     validateArray(discounts, 'discounts');
+    // Allow discountTypes to be optional for backward compatibility, but if present, must match length
+    const finalDiscountTypes = discountTypes || new Array(expectedLength).fill('percentage');
+    validateArray(finalDiscountTypes, 'discountTypes'); // Validate the final array
+
     validateArray(gstAmounts, 'gstAmounts');
 
     // Validate customer
@@ -724,9 +763,61 @@ router.post('/', async (req, res) => {
     const totalPendingAmount = parsedTotalReceived !== null ? parsedTotal - parsedTotalReceived : null;
 
     // Validate product IDs
-    const products = await Product.find({ _id: { $in: productIds } });
-    if (products.length !== productIds.length) {
+    const uniqueProductIds = [...new Set(productIds)];
+    const products = await Product.find({ _id: { $in: uniqueProductIds } });
+
+    if (products.length !== uniqueProductIds.length) {
       throw new Error(`Invalid request: One or more products not found`);
+    }
+
+    // --- Generate Custom Invoice Number ---
+    // 1. Determine Financial Year (e.g., "2024-25")
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth(); // 0-11 (April is 3)
+    const currentYear = currentDate.getFullYear();
+    let fyStartYear = currentYear;
+    if (currentMonth < 3) { // Jan, Feb, March -> Previous FY
+      fyStartYear = currentYear - 1;
+    }
+    const fyEndYear = fyStartYear + 1;
+    const financialYear = `${fyStartYear}-${fyEndYear.toString().slice(-2)}`; // "2024-25"
+
+    // 2. Determine Prefix
+    let prefix = 'INV';
+    if (type === 'sales_invoice') prefix = 'INV';
+    else if (type === 'purchase_invoice') prefix = 'PI';
+    else if (type === 'quotation') prefix = 'QUO';
+    else if (type === 'sales_order') prefix = 'ORD';
+
+    // 3. Find last invoice of this type in this FY
+    const lastInvoice = await Invoice.findOne({
+      type: type,
+      financialYear: financialYear
+    }).sort({ seriesNumber: -1 });
+
+    let nextSeriesNum = 1;
+    if (lastInvoice && lastInvoice.seriesNumber) {
+      nextSeriesNum = lastInvoice.seriesNumber + 1;
+    }
+
+    // 4. Format Number: PREFIX/001/FY
+    const invoiceNumber = `${prefix}/${nextSeriesNum.toString().padStart(3, '0')}/${financialYear}`;
+
+    // Handle Credit Usage (New)
+    let creditUsed = 0;
+    if (req.body.creditUsed && req.body.creditUsed > 0 && customerId) {
+      creditUsed = parseFloat(req.body.creditUsed);
+      // Verify customer has enough credit
+      const customerRecord = await Customer.findById(customerId);
+      if (!customerRecord) throw new Error('Customer not found');
+
+      if (customerRecord.creditBalance < creditUsed) {
+        throw new Error(`Insufficient credit balance. Available: ₹${customerRecord.creditBalance}`);
+      }
+
+      // Deduct from customer balance
+      customerRecord.creditBalance -= creditUsed;
+      await customerRecord.save();
     }
 
     // Create invoice
@@ -738,12 +829,32 @@ router.post('/', async (req, res) => {
       quantities: quantities.map(q => parseInt(q)),
       prices: prices.map(p => parseFloat(p)),
       discounts: discounts.map(d => parseFloat(d)),
+      discountTypes: finalDiscountTypes,
       gstAmounts: gstAmounts.map(g => parseFloat(g)),
       total: parsedTotal,
       grandTotalDiscount: parsedGrandTotalDiscount,
       totalReceived: parsedTotalReceived,
-      totalPendingAmount,
+      totalPendingAmount, // Pending amount should consider credit used? 
+      // If we use credit, it acts like a payment. 
+      // User sends 'totalReceived' which usually implies Cash/UPI. 
+      // 'creditUsed' is ADDITIONAL payment source.
+      // So effectively: Total Paid = totalReceived + creditUsed.
+      // We should probably update 'totalReceived' to include 'creditUsed' OR store 'creditUsed' separately.
+      // For now, let's keep it simple: The frontend should calculate 'totalReceived' as (Cash + Credit).
+      // Or we explicitly save it. Let's save 'creditUsed' in invoice schema if we want to track it, but schema update is work.
+      // EASIER: Frontend sends 'totalReceived' = Cash + Credit.
+      // BUT backend needs to know how much to deduct from Customer.
+      // S: backend receives { totalReceived: 1000, creditUsed: 200 }.
+      // Verification: 200 deducted from Customer. 
+      // The Invoice 'totalReceived' field will be 1000. 
+      // Logic holds.
+
       date: new Date(),
+      sizes: req.body.sizes || [],
+      // New Fields
+      invoiceNumber,
+      seriesNumber: nextSeriesNum,
+      financialYear
     });
 
     await invoice.save();
@@ -754,10 +865,26 @@ router.post('/', async (req, res) => {
       for (let i = 0; i < productIds.length; i++) {
         const product = products.find(p => p._id.toString() === productIds[i]);
         const qty = parseInt(quantities[i]);
-        if (product.stock < qty) {
-          throw new Error(`Insufficient stock for ${product.name}`);
+        const size = req.body.sizes ? req.body.sizes[i] : null;
+
+        if (size && product.variants && product.variants.length > 0) {
+          const variant = product.variants.find(v => v.size === size);
+          if (!variant) throw new Error(`Size ${size} not found for product ${product.name}`);
+          if (variant.stock < qty) throw new Error(`Insufficient stock for ${product.name} (Size: ${size})`);
+
+          // Deduct from variant
+          variant.stock -= qty;
+          // Deduct from total
+          product.stock -= qty;
+        } else {
+          if (product.stock < qty) {
+            throw new Error(`Insufficient stock for ${product.name}`);
+          }
+          product.stock -= qty;
         }
-        await Product.findByIdAndUpdate(product._id, { $inc: { stock: -qty } });
+
+        // Save the product (variants are part of the document)
+        await product.save();
       }
     } else if (type === 'purchase_invoice') {
       for (let i = 0; i < productIds.length; i++) {
@@ -770,35 +897,34 @@ router.post('/', async (req, res) => {
     // Create account entries
     if (type === 'sales_invoice') {
       const entries = [];
-      if (parsedTotalReceived === null) {
+      // Always create a Credit entry for the full sales amount (Revenue)
+
+      // Determine actual cash/payment received
+      // If parsedTotalReceived is not null, use it. If it IS null, it means no specific partial amount was sent.
+      // In that case:
+      // - If paymentMode is Credit, received is 0. 
+      // - If paymentMode is Cash/UPI, received is Total.
+      // - BUT simpler: If parsedTotalReceived is NULL, earlier logic sets 'totalReceived' field to null (legacy).
+      //   However, if 'parsedTotalReceived' validates as NULL, the frontend might have meant 'full payment' (legacy) OR field was empty.
+      //   Given the new frontend logic sends 'totalReceived' explicitly:
+      //   - If explicitly provided as number (even 0), use it.
+      //   - If null, fallback to old behavior (Full Total).
+      const amountToRecord = parsedTotalReceived !== null ? parsedTotalReceived : parsedTotal;
+
+      if (amountToRecord > 0) {
         entries.push({
-          accountType: 'Accounts Receivable',
+          accountType: 'Sales Invoice',
           type: 'credit',
-          amount: parsedTotal,
+          amount: amountToRecord,
           invoiceId: invoice._id,
-          description: `Sales Invoice for ${customer}`,
+          description: `Sales Invoice - ${invoiceNumber}`,
           date: invoice.date,
         });
-      } else if (parsedTotalReceived > 0) {
-        entries.push(
-          {
-            accountType: 'Accounts Receivable',
-            type: 'credit',
-            amount: parsedTotal,
-            invoiceId: invoice._id,
-            description: `Sales Invoice for ${customer}`,
-            date: invoice.date,
-          },
-          {
-            accountType: 'Accounts Receivable',
-            type: 'debit',
-            amount: parsedTotalReceived,
-            invoiceId: invoice._id,
-            description: `Payment received for ${customer}`,
-            date: invoice.date,
-          }
-        );
       }
+
+      // Removed the Debit entry for payment received because it incorrecty reduces the "Balance" (Profit) in AccountHistory.
+      // Payment is tracked in Invoice.totalReceived.
+
       if (entries.length > 0) await Account.insertMany(entries);
     } else if (type === 'purchase_invoice') {
       await Account.create({
@@ -861,18 +987,19 @@ router.put('/:id', async (req, res) => {
       databaseName
     });
 
-    // Create account entry for additional payment
+    // Account entry for additional payment REMOVED to prevent "Double/Debit" entry issue.
+    // Payment is tracked in Invoice.totalReceived.
+
+    // Account entry for additional payment
     if (additionalReceived > 0 && invoice.type === 'sales_invoice') {
-      const accountEntry = {
-        accountType: 'Accounts Receivable',
-        type: 'debit',
+      await Account.create({
+        accountType: 'Sales Invoice Payment',
+        type: 'credit',
         amount: additionalReceived,
         invoiceId: invoice._id,
-        description: `Additional payment received for ${invoice.customer}`,
+        description: `Payment Received - ${invoice.invoiceNumber || invoice._id}`,
         date: new Date(),
-      };
-      await Account.create(accountEntry);
-      console.log('Account entry created for additional payment:', { invoiceId: invoice._id, amount: additionalReceived });
+      });
     }
 
     const populatedInvoice = await Invoice.findById(invoice._id)

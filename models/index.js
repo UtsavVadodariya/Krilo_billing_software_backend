@@ -33,6 +33,10 @@ const registerModels = (dbName) => {
     delete conn.models['CompanySettings'];
     console.log('Cleared existing CompanySettings model for:', dbName);
   }
+  if (conn.models['Return']) {
+    delete conn.models['Return'];
+    console.log('Cleared existing Return model for:', dbName);
+  }
 
   // Register models
   const ProductModel = conn.model('Product', productSchema, 'products');
@@ -45,6 +49,8 @@ const registerModels = (dbName) => {
   console.log('Customer model registered for:', dbName);
   const CompanySettingsModel = conn.model('CompanySettings', companySettingsSchema, 'companySettings');
   console.log('CompanySettings model registered for:', dbName);
+  const ReturnModel = conn.model('Return', require('./Return'), 'returns');
+  console.log('Return model registered for:', dbName);
 
   return {
     Product: ProductModel,
@@ -52,6 +58,7 @@ const registerModels = (dbName) => {
     Account: AccountModel,
     Customer: CustomerModel,
     CompanySettings: CompanySettingsModel,
+    Return: ReturnModel,
   };
 };
 

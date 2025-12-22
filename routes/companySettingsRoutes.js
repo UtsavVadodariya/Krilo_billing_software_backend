@@ -76,6 +76,7 @@ router.post('/', upload.fields([
       contactNumber: contactNumber ? contactNumber.trim() : '',
       upiId: upiId ? upiId.trim() : '',
       upiName: upiName ? upiName.trim() : '',
+      printFormat: req.body.printFormat || 'POS',
     };
 
     // Handle file uploads
