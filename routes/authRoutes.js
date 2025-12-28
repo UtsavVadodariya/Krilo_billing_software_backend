@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const router = express.Router();
+const Settings = require('../models/Settings');
 
 // Use consistent JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key';
@@ -11,6 +12,19 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret_key';
 
 router.post('/register', async (req, res) => {
   try {
+    // 1. Check Global Settings & Limits
+    let settings = await Settings.findOne();
+    if (!settings) settings = await Settings.create({});
+
+    if (!settings.registrationEnabled) {
+      return res.status(403).json({ error: 'New registrations are currently disabled by the administrator.' });
+    }
+
+    const userCount = await User.countDocuments({}); // Count all registered users
+    if (userCount >= settings.userLimit) {
+      return res.status(403).json({ error: 'User limit reached. Please contact support.' });
+    }
+
     const { phoneNumber, password } = req.body;
     if (!phoneNumber || !password) {
       return res.status(400).json({ error: 'Phone number and password are required' });
@@ -98,6 +112,15 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
+    // Check Account Status
+    if (user.isActive === false) {
+      return res.status(403).json({ error: 'Your account is inactive. Please contact support.' });
+    }
+
+    if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) {
+      return res.status(403).json({ error: 'Your subscription has expired. Please contact support to renew.' });
+    }
+
     // PIN Authentication Logic
     if (user.pin) {
       if (!pin) {
@@ -130,6 +153,7 @@ router.post('/login', async (req, res) => {
 
     const sessionKey = Math.floor(100000 + Math.random() * 900000).toString();
     user.currentSessionKey = sessionKey;
+    user.lastLogin = new Date();
     await user.save();
 
     const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, JWT_SECRET, { expiresIn: '8h' });
@@ -167,9 +191,12 @@ router.get('/user', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'No token provided', redirect: true });
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('phoneNumber role pin currentSessionKey');
+    const user = await User.findById(decoded.userId).select('phoneNumber role pin currentSessionKey isActive subscriptionExpiry');
 
     if (!user) return res.status(404).json({ error: 'User not found', redirect: true });
+
+    if (user.isActive === false) return res.status(403).json({ error: 'Account inactive', forceLogout: true });
+    if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) return res.status(403).json({ error: 'Subscription expired', forceLogout: true });
 
     // Lazy generation of session key for existing logged-in users
     if (!user.currentSessionKey) {
@@ -223,6 +250,14 @@ router.get('/validate-token', async (req, res) => {
         error: 'User not found',
         redirect: true
       });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({ error: 'Your account is inactive.', forceLogout: true });
+    }
+
+    if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) {
+      return res.status(403).json({ error: 'Subscription expired', forceLogout: true });
     }
 
     // Check if databaseName exists

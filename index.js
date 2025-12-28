@@ -12,6 +12,8 @@ const customerRoutes = require('./routes/customerRoutes');
 const returnRoutes = require('./routes/returnRoutes'); // Import return routes
 const companySettingsRoutes = require('./routes/companySettingsRoutes');
 const authMiddleware = require('./middleware/auth');
+const adminRoutes = require('./routes/adminRoutes'); // Import admin routes
+const settingsRoutes = require('./routes/settingsRoutes');
 const { mongooseConnectIndex, baseUrl } = require('./utils/baseUrl');
 
 const app = express();
@@ -47,6 +49,8 @@ app.use('/api/accounts', authMiddleware, accountRoutes);
 app.use('/api/customers', authMiddleware, customerRoutes);
 app.use('/api/returns', authMiddleware, returnRoutes); // Register return routes
 app.use('/api/company-settings', authMiddleware, companySettingsRoutes);
+app.use('/api/admin', adminRoutes); // Register admin routes
+app.use('/api/settings', settingsRoutes);
 
 // Connect to MongoDB
 mongoose.connect(`${mongooseConnectIndex}`, {

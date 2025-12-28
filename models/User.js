@@ -7,7 +7,10 @@ const userSchema = new mongoose.Schema({
   pin: { type: String },
   databaseName: { type: String, required: true, unique: true },
   currentSessionKey: { type: String },
-});
+  lastLogin: { type: Date },
+  isActive: { type: Boolean, default: true },
+  subscriptionExpiry: { type: Date, default: () => new Date(+new Date() + 365 * 24 * 60 * 60 * 1000) }, // Default 1 year from now
+}, { timestamps: true });
 
 userSchema.pre('save', async function (next) {
   if (this.isModified('password')) {
