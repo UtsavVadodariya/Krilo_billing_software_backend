@@ -1,28 +1,34 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { ApplicationLogin } = require('../models_sql/index'); // SQL Model
 const router = express.Router();
-const Settings = require('../models/Settings');
 
 // Use consistent JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key';
 
+// Mock Settings for now or implement SQL Settings if needed
+const Settings = {
+  findOne: async () => ({ registrationEnabled: true, userLimit: 1000 })
+};
 
 router.post('/register', async (req, res) => {
+  console.log('--- REGISTER REQUEST RECEIVED ---');
+  console.log('DB Config:', {
+    host: process.env.DB_HOST,
+    name: process.env.DB_NAME,
+    user: process.env.DB_USER
+  });
   try {
     // 1. Check Global Settings & Limits
-    let settings = await Settings.findOne();
-    if (!settings) settings = await Settings.create({});
-
+    const settings = await Settings.findOne();
     if (!settings.registrationEnabled) {
-      return res.status(403).json({ error: 'New registrations are currently disabled by the administrator.' });
+      return res.status(403).json({ error: 'New registrations are currently disabled.' });
     }
 
-    const userCount = await User.countDocuments({}); // Count all registered users
+    const userCount = await ApplicationLogin.count();
     if (userCount >= settings.userLimit) {
-      return res.status(403).json({ error: 'User limit reached. Please contact support.' });
+      return res.status(403).json({ error: 'User limit reached.' });
     }
 
     const { phoneNumber, password } = req.body;
@@ -31,54 +37,35 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if phone number already exists
-    const existingUser = await User.findOne({ phoneNumber });
+    const existingUser = await ApplicationLogin.findOne({ where: { phoneNumber } });
     if (existingUser) {
       return res.status(400).json({ error: 'Phone number already exists' });
     }
 
-    // Generate unique databaseName ... (Rest of logic remains same)
-    const users = await User.find().sort({ _id: -1 });
+    // Generate unique databaseName (Legacy format support)
+    const lastUser = await ApplicationLogin.findOne({ order: [['id', 'DESC']] });
     let a = 1, c = 1;
-    if (users.length > 0) {
-      const lastDatabaseName = users[0].databaseName;
-      if (lastDatabaseName) {
-        const match = lastDatabaseName.match(/krilo_a(\d+)_c(\d+)/);
-        if (match) {
-          a = parseInt(match[1]);
-          c = parseInt(match[2]) + 1;
-          if (c > 10) {
-            a += 1;
-            c = 1;
-          }
+    if (lastUser && lastUser.databaseName) {
+      const match = lastUser.databaseName.match(/krilo_a(\d+)_c(\d+)/);
+      if (match) {
+        a = parseInt(match[1]);
+        c = parseInt(match[2]) + 1;
+        if (c > 10) {
+          a += 1;
+          c = 1;
         }
       }
     }
     const databaseName = `krilo_a${a}_c${c}`;
 
-    // Validate database name uniqueness
-    const existingDatabase = await User.findOne({ databaseName });
-    if (existingDatabase) {
-      return res.status(400).json({ error: 'System busy, please try again' });
-    }
-
     // Create user
-    const user = new User({ phoneNumber, password, databaseName });
-    await user.save();
+    const user = await ApplicationLogin.create({ phoneNumber, password, databaseName });
     console.log('User registered successfully', { phoneNumber, databaseName });
 
-    // Create user database and collections
-    try {
-      const userDb = mongoose.connection.useDb(databaseName, { useCache: false });
-      await userDb.createCollection('products');
-      await userDb.createCollection('invoices');
-      await userDb.createCollection('accounts');
-    } catch (dbError) {
-      console.error('Failed to create user database/collections', { databaseName, error: dbError.message });
-      await User.deleteOne({ phoneNumber });
-      return res.status(500).json({ error: 'Failed to initialize user database' });
-    }
+    // Note: User DB creation is removed as we are single-tenant now.
 
-    const token = jwt.sign({ userId: user._id, databaseName }, JWT_SECRET, { expiresIn: '8h' });
+    // Use 'id' for token instead of '_id'
+    const token = jwt.sign({ userId: user.id, databaseName }, JWT_SECRET, { expiresIn: '8h' });
     res.status(201).json({ message: 'User registered', token });
   } catch (error) {
     console.error('Registration error:', error);
@@ -89,7 +76,7 @@ router.post('/register', async (req, res) => {
 router.post('/check-user', async (req, res) => {
   try {
     const { phoneNumber } = req.body;
-    const user = await User.findOne({ phoneNumber });
+    const user = await ApplicationLogin.findOne({ where: { phoneNumber } });
     if (!user) {
       return res.json({ exists: false });
     }
@@ -107,7 +94,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Phone number is required' });
     }
 
-    const user = await User.findOne({ phoneNumber });
+    const user = await ApplicationLogin.findOne({ where: { phoneNumber } });
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
@@ -137,7 +124,7 @@ router.post('/login', async (req, res) => {
         }
       }
     } else {
-      // Password Authentication Logic (First time or until PIN is set)
+      // Password Authentication Logic
       if (!password) {
         return res.status(400).json({ error: 'Password is required' });
       }
@@ -147,16 +134,13 @@ router.post('/login', async (req, res) => {
       }
     }
 
-    if (!user.databaseName) {
-      return res.status(400).json({ error: 'User account incomplete' });
-    }
-
+    // Generate Session Key
     const sessionKey = Math.floor(100000 + Math.random() * 900000).toString();
     user.currentSessionKey = sessionKey;
     user.lastLogin = new Date();
-    await user.save();
+    await user.save(); // Sequelize save
 
-    const token = jwt.sign({ userId: user._id, databaseName: user.databaseName }, JWT_SECRET, { expiresIn: '8h' });
+    const token = jwt.sign({ userId: user.id, databaseName: user.databaseName }, JWT_SECRET, { expiresIn: '8h' });
     res.json({ token, hasPin: !!user.pin, sessionKey });
   } catch (error) {
     console.error('Login error:', error);
@@ -177,7 +161,8 @@ router.post('/set-pin', async (req, res) => {
     }
 
     const hashedPin = await bcrypt.hash(pin, 10);
-    await User.findByIdAndUpdate(decoded.userId, { pin: hashedPin });
+    // userId is integer now
+    await ApplicationLogin.update({ pin: hashedPin }, { where: { id: decoded.userId } });
 
     res.json({ message: 'PIN set successfully' });
   } catch (error) {
@@ -191,20 +176,22 @@ router.get('/user', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'No token provided', redirect: true });
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('phoneNumber role pin currentSessionKey isActive subscriptionExpiry');
+    // Select specific fields
+    const user = await ApplicationLogin.findByPk(decoded.userId, {
+      attributes: ['id', 'phoneNumber', 'pin', 'currentSessionKey', 'isActive', 'subscriptionExpiry']
+    });
 
     if (!user) return res.status(404).json({ error: 'User not found', redirect: true });
 
     if (user.isActive === false) return res.status(403).json({ error: 'Account inactive', forceLogout: true });
     if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) return res.status(403).json({ error: 'Subscription expired', forceLogout: true });
 
-    // Lazy generation of session key for existing logged-in users
     if (!user.currentSessionKey) {
       user.currentSessionKey = Math.floor(100000 + Math.random() * 900000).toString();
       await user.save();
     }
 
-    res.json({ _id: user._id, phoneNumber: user.phoneNumber, role: user.role, hasPin: !!user.pin, sessionKey: user.currentSessionKey });
+    res.json({ _id: user.id, phoneNumber: user.phoneNumber, hasPin: !!user.pin, sessionKey: user.currentSessionKey });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch user: ' + error.message });
   }
@@ -213,80 +200,29 @@ router.get('/user', async (req, res) => {
 // Add token validation route
 router.get('/validate-token', async (req, res) => {
   try {
-    console.log('GET /api/auth/validate-token called');
     const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-      console.log('Token validation: No token provided');
-      return res.status(401).json({
-        error: 'No token provided',
-        redirect: true
-      });
-    }
+    if (!token) return res.status(401).json({ error: 'No token provided', redirect: true });
 
     let decoded;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
-      console.log('Token validation: Token decoded successfully', {
-        userId: decoded.userId,
-        databaseName: decoded.databaseName
-      });
     } catch (err) {
-      console.error('Token validation: Token verification failed:', {
-        error: err.message,
-        token: token.substring(0, 20) + '...'
-      });
-      return res.status(401).json({
-        error: 'Invalid or expired token',
-        redirect: true
-      });
+      return res.status(401).json({ error: 'Invalid or expired token', redirect: true });
     }
 
-    // Check if user still exists
-    const user = await User.findById(decoded.userId);
-    if (!user) {
-      console.log('Token validation: User not found for ID:', decoded.userId);
-      return res.status(401).json({
-        error: 'User not found',
-        redirect: true
-      });
-    }
+    const user = await ApplicationLogin.findByPk(decoded.userId);
+    if (!user) return res.status(401).json({ error: 'User not found', redirect: true });
 
-    if (user.isActive === false) {
-      return res.status(403).json({ error: 'Your account is inactive.', forceLogout: true });
-    }
-
-    if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) {
-      return res.status(403).json({ error: 'Subscription expired', forceLogout: true });
-    }
-
-    // Check if databaseName exists
-    if (!decoded.databaseName) {
-      console.error('Token validation: databaseName missing in token', { userId: decoded.userId });
-      return res.status(401).json({
-        error: 'Invalid token: databaseName missing',
-        redirect: true
-      });
-    }
-
-    console.log('Token validation: Token is valid', {
-      userId: decoded.userId,
-      databaseName: decoded.databaseName,
-      email: user.email
-    });
+    if (user.isActive === false) return res.status(403).json({ error: 'Your account is inactive.', forceLogout: true });
+    if (user.subscriptionExpiry && new Date() > new Date(user.subscriptionExpiry)) return res.status(403).json({ error: 'Subscription expired', forceLogout: true });
 
     res.json({
       valid: true,
       userId: decoded.userId,
-      databaseName: decoded.databaseName,
-      email: user.email
+      databaseName: decoded.databaseName
     });
   } catch (error) {
-    console.error('Token validation error:', { error: error.message });
-    res.status(401).json({
-      error: 'Token validation failed',
-      redirect: true
-    });
+    res.status(401).json({ error: 'Token validation failed', redirect: true });
   }
 });
 
@@ -296,12 +232,12 @@ router.post('/validate-key', async (req, res) => {
     const { key } = req.body;
     if (!key) return res.status(400).json({ error: 'Key is required' });
 
-    const user = await User.findOne({ currentSessionKey: key });
+    const user = await ApplicationLogin.findOne({ where: { currentSessionKey: key } });
     if (!user) {
       return res.json({ valid: false });
     }
 
-    res.json({ valid: true, merchantId: user._id });
+    res.json({ valid: true, merchantId: user.id });
   } catch (error) {
     res.status(500).json({ error: 'Validation failed: ' + error.message });
   }

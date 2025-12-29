@@ -1,18 +1,26 @@
 const express = require('express');
-const registerModels = require('../models/index');
+const { Return, ReturnItem, Product, ProductVariant, Account, Customer, Invoice, InvoiceItem } = require('../models_sql/index'); // SQL Models
 const router = express.Router();
 
 // GET all returns
 router.get('/', async (req, res) => {
     try {
-        const databaseName = req.databaseName;
-        if (!databaseName) throw new Error('Database name not provided');
+        const userId = req.userId;
+        if (!userId) throw new Error('User ID not provided');
 
-        const { Return } = registerModels(databaseName);
-        const returns = await Return.find()
-            .populate('customerId', 'name mobileNumber')
-            .populate('originalInvoiceId', 'invoiceNumber')
-            .sort({ date: -1 });
+        const returns = await Return.findAll({
+            where: { a_application_login_id: userId },
+            include: [
+                { model: Customer, attributes: ['name', 'mobileNumber'] },
+                { model: Invoice, attributes: ['invoiceNumber'] },
+                {
+                    model: ReturnItem,
+                    as: 'items',
+                    include: [{ model: Product, attributes: ['name'] }]
+                }
+            ],
+            order: [['date', 'DESC']]
+        });
 
         res.json(returns);
     } catch (error) {
@@ -23,110 +31,113 @@ router.get('/', async (req, res) => {
 
 // POST create a return
 router.post('/', async (req, res) => {
+    const transaction = await Return.sequelize.transaction();
     try {
-        const databaseName = req.databaseName;
-        if (!databaseName) throw new Error('Database name not provided');
+        const userId = req.userId;
+        if (!userId) throw new Error('User ID not provided');
 
-        const { Return, Product, Account, Customer, Invoice } = registerModels(databaseName);
         const { originalInvoiceId, customerId, products, totalRefundAmount, type, date } = req.body;
 
-        // 0. Validate if invoice exists and fetch it for quantity checks
-        const invoice = await Invoice.findById(originalInvoiceId);
-        if (!invoice) {
-            return res.status(404).json({ error: 'Original invoice not found' });
-        }
-
-        // Fetch all previous returns for this invoice
-        const existingReturns = await Return.find({ originalInvoiceId });
-
-        // Calculate previously returned quantities per product (and size)
-        const previouslyReturnedMap = {}; // { "productId-size": totalReturnedQty }
-        existingReturns.forEach(ret => {
-            ret.products.forEach(item => {
-                const pId = item.productId.toString();
-                const size = item.size ? item.size.toString() : 'N/A';
-                const key = `${pId}-${size}`;
-                previouslyReturnedMap[key] = (previouslyReturnedMap[key] || 0) + item.quantity;
-            });
+        // 0. Validate Invoice
+        const invoice = await Invoice.findOne({
+            where: { id: originalInvoiceId, a_application_login_id: userId },
+            include: [{ model: InvoiceItem, as: 'items' }],
+            transaction
         });
 
-        // Validate each item in the current request
-        for (const item of products) {
-            const pId = item.productId.toString();
-            const itemSize = item.size ? item.size.toString() : 'N/A';
-            const key = `${pId}-${itemSize}`;
+        if (!invoice) {
+            throw new Error('Original invoice not found');
+        }
 
-            // Calculate original purchased quantity for this specific product ID AND Size
-            let originalQty = 0;
-            if (invoice.products && invoice.quantities) {
-                invoice.products.forEach((invProdId, index) => {
-                    if (invProdId.toString() === pId) {
-                        // Check if sizes match
-                        const invSize = (invoice.sizes && invoice.sizes[index]) ? invoice.sizes[index].toString() : 'N/A';
-                        if (invSize === itemSize) {
-                            originalQty += invoice.quantities[index];
-                        }
-                    }
+        // Fetch previous returns for this invoice to calculate remaining returnable items
+        const existingReturns = await Return.findAll({
+            where: { originalInvoiceId },
+            include: [{ model: ReturnItem, as: 'items' }],
+            transaction
+        });
+
+        // Map previously returned quantities: { "productId-size": qty }
+        const previouslyReturnedMap = {};
+        existingReturns.forEach(ret => {
+            if (ret.items) {
+                ret.items.forEach(item => {
+                    const key = `${item.productId}-${item.size || 'N/A'}`;
+                    previouslyReturnedMap[key] = (previouslyReturnedMap[key] || 0) + item.quantity;
                 });
             }
+        });
+
+        // Validate Items
+        for (const item of products) {
+            const pId = item.productId;
+            const itemSize = item.size || 'N/A';
+            const key = `${pId}-${itemSize}`;
+
+            // Find item in original invoice
+            // Note: InvoiceItems in SQL are distinct rows. We filter by productId and size.
+            // Items might be duplicated if same product/size added twice? Unlikely in standard flow but possible.
+            // Sum up matching invoice lines.
+            const invoiceItems = invoice.items.filter(invItem =>
+                invItem.productId == pId && (invItem.size || 'N/A') === itemSize
+            );
+
+            const originalQty = invoiceItems.reduce((sum, i) => sum + i.quantity, 0);
 
             if (originalQty === 0) {
-                return res.status(400).json({ error: `Product ${item.productId} (Size: ${item.size || 'N/A'}) not found in original invoice` });
+                throw new Error(`Product ${pId} (Size: ${itemSize}) not found in original invoice`);
             }
 
             const previouslyReturnedQty = previouslyReturnedMap[key] || 0;
             const remainingQty = originalQty - previouslyReturnedQty;
 
             if (item.quantity > remainingQty) {
-                return res.status(400).json({
-                    error: `Cannot return ${item.quantity} of product. Only ${remainingQty} remaining from original purchase (Size: ${item.size || 'N/A'}).`
-                });
+                throw new Error(`Cannot return ${item.quantity}. Only ${remainingQty} remaining for Product ${pId} (Size: ${itemSize}).`);
             }
         }
 
         // 1. Create Return Record
-        // Ensure size is included in the stored product objects
-        // The item object in 'products' array from req.body should already have it, 
-        // but we can map explicitly to be safe if strictly picking fields.
-        // Mongoose schema will pick it up if present.
-
-        const returnRecord = new Return({
+        const returnRecord = await Return.create({
+            a_application_login_id: userId,
             originalInvoiceId,
             customerId,
-            products,
             totalRefundAmount,
-            type,
+            type, // 'cash_refund' or 'credit_note'
             date: date || new Date()
-        });
-        await returnRecord.save();
+        }, { transaction });
+
+        // Create Return Items
+        for (const item of products) {
+            await ReturnItem.create({
+                returnId: returnRecord.id,
+                productId: item.productId,
+                quantity: item.quantity,
+                price: item.price,
+                reason: item.reason || 'Defective/Exchange',
+                size: item.size
+            }, { transaction });
+        }
 
         // 2. Update Inventory (Increase Stock)
         for (const item of products) {
-            if (!item.productId) continue;
+            const qty = parseInt(item.quantity);
 
-            const product = await Product.findById(item.productId);
-            if (product) {
-                // If the item had a specific variant size (not passed in generic structure but for future)
-                // For now, if we don't have explicit size-based stock management in Product model, 
-                // we just increment main stock.
-                // TODO: If Product model supports sizes array with stock, find and increment that specific size.
-
-                // Check if product has sizes array in its schema (assuming standard Krilo structure)
-                // If it does, find index and increment.
-                if (item.size && product.sizes && Array.isArray(product.sizes)) {
-                    const sizeIndex = product.sizes.findIndex(s => s.size === item.size);
-                    if (sizeIndex !== -1) {
-                        // Careful: product.sizes might be objects [{size: 'M', quantity: 10}] or strings.
-                        // Checking standard Product.js... usually it's array of objects for stock.
-                        // Let's assume standard behavior: update both global stock and variant stock if structure exists.
-                        if (product.sizes[sizeIndex].quantity !== undefined) {
-                            product.sizes[sizeIndex].quantity += parseInt(item.quantity);
-                        }
-                    }
+            // Update Variant Stock if size exists
+            if (item.size) {
+                const variant = await ProductVariant.findOne({
+                    where: { productId: item.productId, size: item.size },
+                    transaction
+                });
+                if (variant) {
+                    variant.stock += qty;
+                    await variant.save({ transaction });
                 }
+            }
 
-                product.stock += parseInt(item.quantity);
-                await product.save();
+            // Update Main Product Stock
+            const product = await Product.findByPk(item.productId, { transaction });
+            if (product) {
+                product.stock += qty;
+                await product.save({ transaction });
             }
         }
 
@@ -134,24 +145,29 @@ router.post('/', async (req, res) => {
         if (type === 'credit_note') {
             // Update Customer Credit Balance
             if (customerId) {
-                await Customer.findByIdAndUpdate(customerId, {
-                    $inc: { creditBalance: totalRefundAmount }
-                });
+                const customerMap = await Customer.findByPk(customerId, { transaction });
+                if (customerMap) {
+                    customerMap.creditBalance += parseFloat(totalRefundAmount);
+                    await customerMap.save({ transaction });
+                }
             }
         } else if (type === 'cash_refund') {
-            const refundEntry = new Account({
+            await Account.create({
+                a_application_login_id: userId,
+                invoiceId: originalInvoiceId,
                 accountType: 'Sales Return Refund',
                 type: 'debit', // Money Out
                 amount: totalRefundAmount,
                 date: date || new Date(),
-                invoiceId: originalInvoiceId,
-                description: `Refund for Return`
-            });
-            await refundEntry.save();
+                description: `Refund for Return - Inv #${invoice.invoiceNumber}`
+            }, { transaction });
         }
 
+        await transaction.commit();
         res.status(201).json(returnRecord);
+
     } catch (error) {
+        await transaction.rollback();
         console.error('Error creating return:', error);
         res.status(400).json({ error: 'Failed to create return: ' + error.message });
     }

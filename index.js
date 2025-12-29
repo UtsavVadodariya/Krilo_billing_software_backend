@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 mongoose.set('strictQuery', false);
 const cors = require('cors');
 const path = require('path');
-const User = require('./models/User');
+// const User = require('./models/User');
 const productRoutes = require('./routes/productRoutes');
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const accountRoutes = require('./routes/accountRoutes');
@@ -53,6 +53,14 @@ app.use('/api/admin', adminRoutes); // Register admin routes
 app.use('/api/settings', settingsRoutes);
 
 // Connect to MongoDB
+const { connectDB } = require('./config/database');
+const { ApplicationLogin } = require('./models_sql/index');
+
+// Connect to MySQL
+connectDB();
+
+// Legacy MongoDB Connection (Commented out for migration)
+/*
 mongoose.connect(`${mongooseConnectIndex}`, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -62,6 +70,7 @@ mongoose.connect(`${mongooseConnectIndex}`, {
   console.error('MongoDB connection error:', err);
   process.exit(1);
 });
+*/
 
 // Setup Socket.io
 const http = require('http');
@@ -81,9 +90,9 @@ io.on('connection', (socket) => {
 
   socket.on('join_with_key', async (key) => {
     try {
-      const user = await User.findOne({ currentSessionKey: key });
+      const user = await ApplicationLogin.findOne({ where: { currentSessionKey: key } });
       if (user) {
-        const roomName = user._id.toString();
+        const roomName = user.id.toString(); // Use ID as room name (ensure frontend handles string/int)
         socket.join(roomName);
         socket.emit('key_valid', { valid: true, merchantId: roomName });
         console.log(`Socket ${socket.id} joined room ${roomName}`);

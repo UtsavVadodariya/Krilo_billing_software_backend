@@ -1,11 +1,11 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { ApplicationLogin } = require('../models_sql/index');
 
 module.exports = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
     if (!token) {
-      console.error('Auth middleware: No token provided');
+      // console.error('Auth middleware: No token provided'); // Reduced noise
       return res.status(401).json({
         error: 'No token provided',
         redirect: true
@@ -13,10 +13,10 @@ module.exports = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
-    // console.log('Auth middleware: Token decoded', { userId: decoded.userId, databaseName: decoded.databaseName });
+    // console.log('Auth middleware: Token decoded', { userId: decoded.userId });
 
     req.userId = decoded.userId;
-    req.databaseName = decoded.databaseName;
+    req.databaseName = decoded.databaseName; // Legacy databaseName on req
 
     if (!req.databaseName) {
       console.error('Auth middleware: databaseName missing in token', { userId: decoded.userId });
@@ -27,7 +27,9 @@ module.exports = async (req, res, next) => {
     }
 
     // Check User Status (Every Request)
-    const user = await User.findById(req.userId).select('isActive subscriptionExpiry');
+    // Using findByPk since userId is Integer ID in new system
+    const user = await ApplicationLogin.findByPk(req.userId);
+
     if (!user) {
       return res.status(401).json({ error: 'User not found', redirect: true });
     }

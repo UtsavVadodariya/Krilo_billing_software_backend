@@ -2,17 +2,19 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const registerModels = require('../models/index');
+const { CompanySettings } = require('../models_sql/index'); // SQL Model
 const fs = require('fs');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, res, cb) => {
-    const databaseName = req.databaseName;
-    if (!databaseName) {
-      return cb(new Error('Database name not provided'));
+    // userId is injected by auth middleware
+    if (!req.userId) {
+      return cb(new Error('User ID not provided'));
     }
-    const uploadPath = path.join('uploads', databaseName);
+    // Using userId for folder separation or just a common uploads folder
+    // For local env, let's keep using 'uploads/userId' or just 'uploads'
+    const uploadPath = path.join('uploads', req.userId.toString());
     fs.mkdirSync(uploadPath, { recursive: true });
     cb(null, uploadPath);
   },
@@ -42,13 +44,8 @@ router.post('/', upload.fields([
   { name: 'companySign', maxCount: 1 },
 ]), async (req, res) => {
   try {
-    const databaseName = req.databaseName;
-    if (!databaseName) {
-      throw new Error('Database name not provided');
-    }
-    console.log('Upserting company settings for database:', databaseName);
-    const { CompanySettings } = registerModels(databaseName);
-    console.log('CompanySettings model retrieved for:', databaseName);
+    const userId = req.userId;
+    console.log('Upserting company settings for userId:', userId);
 
     const { companyName, address, country, state, city, pincode, GSTIN, termsAndConditions, bankName, accountNumber, IFSC, branch, contactNumber, upiId, upiName } = req.body;
 
@@ -59,6 +56,7 @@ router.post('/', upload.fields([
 
     // Prepare update data
     const updateData = {
+      a_application_login_id: userId, // Foreign Key
       companyName: companyName.trim(),
       address: address.trim(),
       country: country.trim(),
@@ -67,12 +65,12 @@ router.post('/', upload.fields([
       pincode: pincode.trim(),
       GSTIN: GSTIN ? GSTIN.trim() : '',
       termsAndConditions: termsAndConditions ? termsAndConditions.trim() : '',
-      bankDetails: {
-        bankName: bankName ? bankName.trim() : '',
-        accountNumber: accountNumber ? accountNumber.trim() : '',
-        IFSC: IFSC ? IFSC.trim() : '',
-        branch: branch ? branch.trim() : '',
-      },
+      // Flattened Bank Details
+      bankName: bankName ? bankName.trim() : '',
+      bankAccountNumber: accountNumber ? accountNumber.trim() : '',
+      bankIFSC: IFSC ? IFSC.trim() : '',
+      bankBranch: branch ? branch.trim() : '',
+
       contactNumber: contactNumber ? contactNumber.trim() : '',
       upiId: upiId ? upiId.trim() : '',
       upiName: upiName ? upiName.trim() : '',
@@ -97,16 +95,19 @@ router.post('/', upload.fields([
       updateData.companySign = req.files.companySign[0].path;
     }
 
-    // Upsert: Update if exists, create if not
-    const settings = await CompanySettings.findOneAndUpdate(
-      {}, // Single document per database
-      { $set: updateData },
-      { upsert: true, new: true, runValidators: true }
-    );
-    console.log('Company settings upserted:', { companyName, databaseName });
+    // Upsert: Find one by userId, if exists update, else create
+    let settings = await CompanySettings.findOne({ where: { a_application_login_id: userId } });
+
+    if (settings) {
+      await settings.update(updateData);
+    } else {
+      settings = await CompanySettings.create(updateData);
+    }
+
+    console.log('Company settings upserted:', { companyName, userId });
     res.status(201).json(settings);
   } catch (error) {
-    console.error('Error upserting company settings:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error upserting company settings:', { error: error.message, userId: req.userId });
     res.status(400).json({ error: 'Failed to upsert company settings: ' + error.message });
   }
 });
@@ -114,21 +115,29 @@ router.post('/', upload.fields([
 // GET company settings
 router.get('/', async (req, res) => {
   try {
-    const databaseName = req.databaseName;
-    if (!databaseName) {
-      throw new Error('Database name not provided');
-    }
-    console.log('Fetching company settings for database:', databaseName);
-    const { CompanySettings } = registerModels(databaseName);
-    console.log('CompanySettings model retrieved for:', databaseName);
-    const settings = await CompanySettings.findOne().select('-__v');
+    const userId = req.userId;
+    console.log('Fetching company settings for userId:', userId);
+
+    const settings = await CompanySettings.findOne({ where: { a_application_login_id: userId } });
+
     if (!settings) {
-      return res.status(404).json({ error: 'Company settings not found' });
+      // Return empty object or specific status if not set yet, but frontend expects 200 usually
+      return res.status(200).json({});
     }
-    console.log('Company settings fetched:', { companyName: settings.companyName, databaseName });
-    res.json(settings);
+
+    // Remap flattened bank details back to nested object if frontend expects it
+    const responseData = settings.toJSON();
+    responseData.bankDetails = {
+      bankName: responseData.bankName,
+      accountNumber: responseData.bankAccountNumber,
+      IFSC: responseData.bankIFSC,
+      branch: responseData.bankBranch
+    };
+
+    console.log('Company settings fetched:', { companyName: settings.companyName, userId });
+    res.json(responseData);
   } catch (error) {
-    console.error('Error fetching company settings:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error fetching company settings:', { error: error.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to fetch company settings: ' + error.message });
   }
 });

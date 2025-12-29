@@ -1,19 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const Settings = require('../models/Settings');
-const User = require('../models/User');
+const { Settings, ApplicationLogin } = require('../models_sql/index'); // SQL Models
 const adminAuth = require('../middleware/adminAuth');
 
-// Public: Get Settings (for Login page to know if it should show Register link)
+// Public: Get Settings
 router.get('/public', async (req, res) => {
     try {
         let settings = await Settings.findOne();
         if (!settings) {
-            // Create default if not exists
             settings = await Settings.create({});
         }
 
-        const userCount = await User.countDocuments({}); // Count all registered users as Admin is not in DB
+        const userCount = await ApplicationLogin.count();
 
         res.json({
             registrationEnabled: settings.registrationEnabled,
@@ -23,24 +21,18 @@ router.get('/public', async (req, res) => {
         });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ error: 'Server error' });
+        res.status(500).json({ error: 'Server error: ' + error.message });
     }
 });
 
 // Admin: Update Settings
 router.put('/', adminAuth, async (req, res) => {
-    // Check if user is admin (Assuming middleware adds req.user or we check specific admin flag)
-    // For now assuming the auth middleware verifies a valid token, and we might add an isAdmin check if needed.
-    // Based on previous context, there is a hardcoded admin check or specific admin routes. 
-    // If this route is protected by the same 'auth' as users, we might need to ensure only admin calls it.
-    // However, the task implies this is for the Admin Panel.
-
     try {
         const { registrationEnabled, userLimit } = req.body;
 
         let settings = await Settings.findOne();
         if (!settings) {
-            settings = new Settings({});
+            settings = await Settings.create({});
         }
 
         if (typeof registrationEnabled !== 'undefined') settings.registrationEnabled = registrationEnabled;

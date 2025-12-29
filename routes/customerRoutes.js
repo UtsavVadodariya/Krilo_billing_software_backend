@@ -1,22 +1,25 @@
 const express = require('express');
-const registerModels = require('../models/index');
+const { Customer } = require('../models_sql/index'); // SQL Model
 const router = express.Router();
 
 // GET all customers
 router.get('/', async (req, res) => {
   try {
-    const databaseName = req.databaseName; // Set by auth middleware
-    if (!databaseName) {
-      throw new Error('Database name not provided');
+    const userId = req.userId;
+    if (!userId) {
+      throw new Error('User ID not provided');
     }
-    console.log('Fetching customers for database:', databaseName);
-    const { Customer } = registerModels(databaseName);
-    console.log('Customer model retrieved for:', databaseName);
-    const customers = await Customer.find().select('-__v');
-    console.log('Customers fetched:', { count: customers.length, databaseName });
+    console.log('Fetching customers for userId:', userId);
+
+    const customers = await Customer.findAll({
+      where: { a_application_login_id: userId },
+      order: [['createdAt', 'DESC']]
+    });
+
+    console.log('Customers fetched:', { count: customers.length, userId });
     res.json(customers);
   } catch (error) {
-    console.error('Error fetching customers:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error fetching customers:', { error: error.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to fetch customers: ' + error.message });
   }
 });
@@ -24,20 +27,19 @@ router.get('/', async (req, res) => {
 // POST create a new customer
 router.post('/', async (req, res) => {
   try {
-    const databaseName = req.databaseName; // Set by auth middleware
-    if (!databaseName) {
-      throw new Error('Database name not provided');
+    const userId = req.userId;
+    if (!userId) {
+      throw new Error('User ID not provided');
     }
-    console.log('Adding customer for database:', databaseName);
-    const { Customer } = registerModels(databaseName);
-    console.log('Customer model retrieved for:', databaseName);
+    console.log('Adding customer for userId:', userId);
 
     const { name, mobileNumber, address, country, state, city, pincode, GSTIN } = req.body;
     if (!name || !mobileNumber) {
       throw new Error('Name and mobile number are required');
     }
 
-    const customer = new Customer({
+    const customer = await Customer.create({
+      a_application_login_id: userId,
       name,
       mobileNumber,
       address,
@@ -47,11 +49,11 @@ router.post('/', async (req, res) => {
       pincode,
       GSTIN: GSTIN || '',
     });
-    await customer.save();
-    console.log('Customer added:', { name, databaseName });
+
+    console.log('Customer added:', { name, userId });
     res.status(201).json(customer);
   } catch (error) {
-    console.error('Error adding customer:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error adding customer:', { error: error.message, userId: req.userId });
     res.status(400).json({ error: 'Failed to add customer: ' + error.message });
   }
 });
@@ -59,9 +61,8 @@ router.post('/', async (req, res) => {
 // PUT update a customer
 router.put('/:id', async (req, res) => {
   try {
-    const databaseName = req.databaseName;
-    if (!databaseName) throw new Error('Database name not provided');
-    const { Customer } = registerModels(databaseName);
+    const userId = req.userId;
+    const { id } = req.params;
 
     const { name, mobileNumber, address, country, state, city, pincode, GSTIN } = req.body;
 
@@ -70,29 +71,26 @@ router.put('/:id', async (req, res) => {
       throw new Error('Mobile number cannot be empty');
     }
 
-    const customer = await Customer.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        mobileNumber,
-        address,
-        country,
-        state,
-        city,
-        pincode,
-        GSTIN
-      },
-      { new: true, runValidators: true }
-    );
-
+    const customer = await Customer.findOne({ where: { id, a_application_login_id: userId } });
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
     }
 
-    console.log('Customer updated:', { id: req.params.id, databaseName });
+    await customer.update({
+      name,
+      mobileNumber,
+      address,
+      country,
+      state,
+      city,
+      pincode,
+      GSTIN
+    });
+
+    console.log('Customer updated:', { id, userId });
     res.json(customer);
   } catch (error) {
-    console.error('Error updating customer:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error updating customer:', { error: error.message, userId: req.userId });
     res.status(400).json({ error: 'Failed to update customer: ' + error.message });
   }
 });
@@ -100,20 +98,21 @@ router.put('/:id', async (req, res) => {
 // DELETE a customer
 router.delete('/:id', async (req, res) => {
   try {
-    const databaseName = req.databaseName;
-    if (!databaseName) throw new Error('Database name not provided');
-    const { Customer } = registerModels(databaseName);
+    const userId = req.userId;
+    const { id } = req.params;
 
-    const customer = await Customer.findByIdAndDelete(req.params.id);
+    const customer = await Customer.findOne({ where: { id, a_application_login_id: userId } });
 
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
     }
 
-    console.log('Customer deleted:', { id: req.params.id, databaseName });
+    await customer.destroy();
+
+    console.log('Customer deleted:', { id, userId });
     res.json({ message: 'Customer deleted successfully' });
   } catch (error) {
-    console.error('Error deleting customer:', { error: error.message, databaseName: req.databaseName });
+    console.error('Error deleting customer:', { error: error.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to delete customer: ' + error.message });
   }
 });
