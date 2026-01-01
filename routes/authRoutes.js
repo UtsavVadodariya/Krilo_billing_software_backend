@@ -191,7 +191,7 @@ router.get('/user', async (req, res) => {
       await user.save();
     }
 
-    res.json({ _id: user.id, phoneNumber: user.phoneNumber, hasPin: !!user.pin, sessionKey: user.currentSessionKey });
+    res.json({ id: user.id, phoneNumber: user.phoneNumber, hasPin: !!user.pin, sessionKey: user.currentSessionKey });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch user: ' + error.message });
   }

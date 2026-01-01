@@ -12,7 +12,7 @@ router.get('/', async (req, res) => {
             where: { a_application_login_id: userId },
             include: [
                 { model: Customer, attributes: ['name', 'mobileNumber'] },
-                { model: Invoice, attributes: ['invoiceNumber'] },
+                { model: Invoice, as: 'originalInvoice', attributes: ['invoiceNumber'] },
                 {
                     model: ReturnItem,
                     as: 'items',

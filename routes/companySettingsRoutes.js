@@ -87,6 +87,21 @@ router.post('/', upload.fields([
       }
     }
 
+    // Handle Wheel Settings
+    if (req.body.wheelEnabled !== undefined) {
+      updateData.wheelEnabled = req.body.wheelEnabled === 'true' || req.body.wheelEnabled === true;
+    }
+
+    if (req.body.wheelSettings) {
+      try {
+        updateData.wheelSettings = typeof req.body.wheelSettings === 'string'
+          ? JSON.parse(req.body.wheelSettings)
+          : req.body.wheelSettings;
+      } catch (e) {
+        console.error('Failed to parse wheelSettings:', e);
+      }
+    }
+
     // Handle file uploads
     if (req.files.companyLogo) {
       updateData.companyLogo = req.files.companyLogo[0].path;

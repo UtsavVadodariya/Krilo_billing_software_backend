@@ -31,7 +31,7 @@ const connectDB = async () => {
 
         // Sync models (creates tables if they don't exist)
         // In production, you might want to use migrations instead of sync()
-        // await sequelize.sync({ alter: true }); 
+        await sequelize.sync({ alter: true });
         // console.log('MySQL Models Synced');
     } catch (error) {
         console.error('MySQL Connection Error:', error);

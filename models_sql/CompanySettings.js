@@ -82,6 +82,15 @@ const CompanySettings = sequelize.define('CompanySettings', {
             currentSequence: 1,
             randomLength: 6
         }
+    },
+    // Spin Wheel Configuration
+    wheelEnabled: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false
+    },
+    wheelSettings: {
+        type: DataTypes.JSON,
+        defaultValue: [] // Array of { minAmount, maxAmount, maxReward, segments }
     }
 }, {
     tableName: 'company_settings',

@@ -58,7 +58,17 @@ router.get('/', async (req, res) => {
 
     // Transform if needed to match frontend expectation (optional, depending on frontend consumption)
     console.log('Invoices fetched:', { count: invoices.length, userId });
-    res.json(invoices);
+    // Calculate totalPendingAmount for each invoice
+    const invoicesWithPending = invoices.map(inv => {
+      const pending = inv.total - (inv.totalReceived || 0);
+      return {
+        ...inv.toJSON(), // Convert Sequelize instance to POJO
+        totalPendingAmount: pending > 0 ? pending : 0
+      };
+    });
+
+    console.log('Invoices fetched:', { count: invoices.length, userId });
+    res.json(invoicesWithPending);
   } catch (error) {
     console.error('Error fetching invoices:', { error: error.message, userId: req.userId });
     res.status(500).json({ error: 'Failed to fetch invoices: ' + error.message });
@@ -80,9 +90,56 @@ router.get('/sales_invoice', async (req, res) => {
       ],
       order: [['createdAt', 'DESC']]
     });
-    res.json(invoices);
+    const invoicesWithPending = invoices.map(inv => {
+      const pending = inv.total - (inv.totalReceived || 0);
+      return {
+        ...inv.toJSON(),
+        totalPendingAmount: pending > 0 ? pending : 0
+      };
+    });
+    res.json(invoicesWithPending);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sales invoices: ' + error.message });
+  }
+});
+
+// GET Invoices by Customer Name (Search)
+router.get('/customer', async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { customerName } = req.query;
+
+    const whereClause = { a_application_login_id: userId };
+
+    if (customerName) {
+      whereClause.customerName = { [Op.like]: `%${customerName}%` };
+    }
+
+    const invoices = await Invoice.findAll({
+      where: whereClause,
+      include: [
+        { model: Customer },
+        {
+          model: InvoiceItem,
+          as: 'items',
+          include: [{ model: Product }]
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const invoicesWithPending = invoices.map(inv => {
+      const pending = inv.total - (inv.totalReceived || 0);
+      return {
+        ...inv.toJSON(),
+        totalPendingAmount: pending > 0 ? pending : 0
+      };
+    });
+
+    res.json(invoicesWithPending);
+  } catch (error) {
+    console.error('Error fetching filtered invoices:', error);
+    res.status(500).json({ error: 'Failed to fetch invoices: ' + error.message });
   }
 });
 
@@ -113,7 +170,14 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    res.json(invoice);
+    // Calculate pending amount
+    const pending = invoice.total - (invoice.totalReceived || 0);
+    const invoiceData = {
+      ...invoice.toJSON(),
+      totalPendingAmount: pending > 0 ? pending : 0
+    };
+
+    res.json(invoiceData);
   } catch (error) {
     console.error('Error fetching invoice:', { error: error.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to fetch invoice: ' + error.message });
@@ -202,7 +266,7 @@ router.get('/:id/pdf', async (req, res) => {
 
     // ... (PDF drawing code reuse, adapting `populatedInvoice` to `invoice`, `companySettings` match) ...
     // Note: Skipping full PDF redraw code for brevity in this step, but essentially copying the 
-    // structure and replacing variable access (e.g. invoice._id -> invoice.id, invoice.customerId.name -> invoice.Customer.name)
+    // structure and replacing variable access (e.g. invoice.id -> invoice.id, invoice.customerId.name -> invoice.Customer.name)
 
     // Footer
     currentY = 700; // Placeholder Y
@@ -227,9 +291,15 @@ router.post('/', async (req, res) => {
     const parsedTotal = parseFloat(total);
     if (isNaN(parsedTotal) || parsedTotal <= 0) throw new Error('Invalid Total');
 
+    // Ensure customerId is null if empty/falsy to avoid FK constraint errors
+    const validCustomerId = customerId || null;
+
     // Customer Validation
-    const customerDoc = await Customer.findOne({ where: { id: customerId, a_application_login_id: userId } });
-    if (!customerDoc) throw new Error('Customer not found');
+    let customerDoc = null;
+    if (validCustomerId) {
+      customerDoc = await Customer.findOne({ where: { id: validCustomerId, a_application_login_id: userId } });
+      if (!customerDoc) throw new Error('Customer not found');
+    }
 
     // Credit check
     if (creditUsed && creditUsed > 0) {
@@ -251,22 +321,65 @@ router.post('/', async (req, res) => {
       }, { transaction });
     }
 
+    // Ensure invoiceFormat is an object (handle potential double-semialization or string storage)
+    let invoiceFormat = companySettings.invoiceFormat;
+    if (typeof invoiceFormat === 'string') {
+      try {
+        invoiceFormat = JSON.parse(invoiceFormat);
+        // Update the object in memory so subsequent access uses the parsed version
+        companySettings.invoiceFormat = invoiceFormat;
+      } catch (e) {
+        console.error('Error parsing invoiceFormat in create invoice:', e);
+        invoiceFormat = {};
+      }
+    }
+
     // Logic for Invoice Number generation (Sequential/Random) - Adapted
     let invoiceNumber = '';
     let seriesNumber = 1;
     let financialYear = '';
 
-    if (companySettings.invoiceFormat?.strategy === 'random') {
-      // Random logic
-      invoiceNumber = 'RND' + Date.now(); // Simplified for now
+    if (invoiceFormat?.strategy === 'random') {
+      // Random logic - generates random alphanumeric string of specified length
+      const length = parseInt(invoiceFormat.randomLength) || 6;
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let randomStr = '';
+      for (let i = 0; i < length; i++) {
+        randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      invoiceNumber = `${invoiceFormat.prefix || ''}${randomStr}`;
     } else {
       // Sequential
-      seriesNumber = companySettings.invoiceFormat?.currentSequence || 1;
-      invoiceNumber = `${companySettings?.invoiceFormat?.prefix || ''}${seriesNumber}`;
+      seriesNumber = invoiceFormat?.currentSequence || 1;
+      invoiceNumber = `${invoiceFormat?.prefix || ''}${seriesNumber}`;
+
+      // Collision Check: Ensure this invoice number doesn't already exist
+      const existingInvoice = await Invoice.findOne({
+        where: {
+          a_application_login_id: userId,
+          invoiceNumber: invoiceNumber
+        },
+        transaction
+      });
+
+      if (existingInvoice) {
+        // If it exists, find the max series number to safely increment
+        const lastInvoice = await Invoice.findOne({
+          where: { a_application_login_id: userId },
+          order: [['seriesNumber', 'DESC']],
+          transaction
+        });
+
+        if (lastInvoice && lastInvoice.seriesNumber) {
+          seriesNumber = lastInvoice.seriesNumber + 1;
+        } else {
+          seriesNumber++; // Fallback
+        }
+        invoiceNumber = `${companySettings?.invoiceFormat?.prefix || ''}${seriesNumber}`;
+      }
 
       // Update sequence
-      // We need to update the JSON field. Sequelize handles JSON updates by reassignment
-      const newFormat = { ...companySettings.invoiceFormat, currentSequence: seriesNumber + 1 };
+      const newFormat = { ...invoiceFormat, currentSequence: seriesNumber + 1 };
       companySettings.invoiceFormat = newFormat;
       await companySettings.save({ transaction });
     }
@@ -274,7 +387,7 @@ router.post('/', async (req, res) => {
     // Create Invoice
     const invoice = await Invoice.create({
       a_application_login_id: userId,
-      customerId,
+      customerId: validCustomerId,
       customerName: customer,
       type,
       invoiceNumber,
@@ -330,13 +443,66 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Refetch the full invoice with items and customer to return complete data
+    const fullInvoice = await Invoice.findOne({
+      where: { id: invoice.id },
+      include: [
+        { model: Customer },
+        {
+          model: InvoiceItem,
+          as: 'items',
+          include: [{ model: Product }]
+        }
+      ],
+      transaction
+    });
+
     await transaction.commit();
-    res.status(201).json(invoice);
+    res.status(201).json(fullInvoice);
 
   } catch (error) {
     await transaction.rollback();
     console.error('Create Invoice Error:', error);
     res.status(400).json({ error: error.message });
+  }
+});
+
+// PUT Update Invoice (Payment)
+router.put('/:id', async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { id } = req.params;
+    const { totalReceived } = req.body;
+
+    if (totalReceived === undefined || totalReceived < 0) {
+      return res.status(400).json({ error: 'Invalid totalReceived value' });
+    }
+
+    const invoice = await Invoice.findOne({ where: { id, a_application_login_id: userId } });
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Validate update
+    if (totalReceived > invoice.total) {
+      return res.status(400).json({ error: 'Total received cannot exceed invoice total' });
+    }
+
+    invoice.totalReceived = totalReceived;
+    await invoice.save();
+
+    // Calculate pending
+    const totalPendingAmount = invoice.total - invoice.totalReceived;
+
+    res.json({
+      message: 'Payment updated successfully',
+      totalReceived: invoice.totalReceived,
+      totalPendingAmount
+    });
+
+  } catch (error) {
+    console.error('Error updating invoice:', error);
+    res.status(500).json({ error: 'Failed to update invoice: ' + error.message });
   }
 });
 

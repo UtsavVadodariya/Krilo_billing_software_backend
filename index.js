@@ -54,10 +54,14 @@ app.use('/api/settings', settingsRoutes);
 
 // Connect to MongoDB
 const { connectDB } = require('./config/database');
-const { ApplicationLogin } = require('./models_sql/index');
+const { ApplicationLogin, CompanySettings } = require('./models_sql/index');
 
 // Connect to MySQL
 connectDB();
+
+// Start Keep-Alive Cron Job
+const { startKeepAlive } = require('./utils/cronJobs');
+startKeepAlive();
 
 // Legacy MongoDB Connection (Commented out for migration)
 /*
@@ -94,7 +98,18 @@ io.on('connection', (socket) => {
       if (user) {
         const roomName = user.id.toString(); // Use ID as room name (ensure frontend handles string/int)
         socket.join(roomName);
-        socket.emit('key_valid', { valid: true, merchantId: roomName });
+
+        // Fetch Company Settings
+        const settings = await CompanySettings.findOne({ where: { a_application_login_id: user.id } });
+
+        socket.emit('key_valid', {
+          valid: true,
+          merchantId: roomName,
+          company: settings ? {
+            name: settings.companyName,
+            logo: settings.companyLogo
+          } : null
+        });
         console.log(`Socket ${socket.id} joined room ${roomName}`);
       } else {
         socket.emit('key_valid', { valid: false });
@@ -128,6 +143,28 @@ io.on('connection', (socket) => {
   socket.on('payment_success', (data) => {
     if (data && data.merchantId) {
       io.to(data.merchantId).emit('show_success');
+    }
+  });
+
+  socket.on('spin_start', (data) => {
+    if (data && data.merchantId) {
+      console.log(`Relaying spin_start to room ${data.merchantId}`);
+      io.to(data.merchantId).emit('spin_start', data);
+    }
+  });
+
+  socket.on('customer_spin_trigger', (data) => {
+    console.log('DEBUG MSG: customer_spin_trigger received', data);
+    if (data && data.merchantId) {
+      const targetRoom = String(data.merchantId);
+      console.log(`DEBUG MSG: Relaying to room ${targetRoom}`);
+      io.to(targetRoom).emit('customer_spin_trigger', data);
+    }
+  });
+
+  socket.on('spin_close', (data) => {
+    if (data && data.merchantId) {
+      io.to(data.merchantId).emit('spin_close');
     }
   });
 

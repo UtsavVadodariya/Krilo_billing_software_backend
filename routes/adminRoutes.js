@@ -104,7 +104,7 @@ router.get('/users', async (req, res) => {
             }
 
             return {
-                _id: user.id, // Using integer ID
+                id: user.id, // Using integer ID
                 phoneNumber: user.phoneNumber,
                 databaseName: user.databaseName, // Legacy field
                 createdAt: user.createdAt,
